@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>A.H.S - Ponto</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: #0a0f1e; }
+  input, select, button, textarea { font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="error-box" style="display:none; background:#7f1d1d; color:#fff; padding:16px; font-family:monospace; font-size:13px; white-space:pre-wrap; word-break:break-word;"></div>
+<script>
+  function showErr(msg) {
+    var box = document.getElementById('error-box');
+    box.style.display = 'block';
+    box.textContent += msg + '\n\n---\n\n';
+  }
+  window.onerror = function(msg, src, line, col, err) {
+    showErr('ERRO: ' + msg + '\n(arquivo: ' + src + ', linha ' + line + ', coluna ' + col + ')' + (err && err.stack ? '\n' + err.stack : ''));
+  };
+  window.addEventListener('unhandledrejection', function(e) {
+    showErr('PROMESSA REJEITADA: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  });
+</script>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-firestore-compat.js"></script>
+
+<script>
+(function () {
+const h = React.createElement;
+const { useState, useEffect, useRef } = React;
+
+// ═══════════════════════════════════════════════════════════
+// FIREBASE
+// ═══════════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey: "AIzaSyCXFD3erw3sOlArLvVEU805gksZiBJZL-4",
+  authDomain: "ponto-ahs.firebaseapp.com",
+  projectId: "ponto-ahs",
+  storageBucket: "ponto-ahs.firebasestorage.app",
+  messagingSenderId: "853134334137",
+  appId: "1:853134334137:web:d34add3ef118a470c2e368",
+  measurementId: "G-L5827M9N4R"
+};
+firebase.initializeApp(firebaseConfig);
+const fdb = firebase.firestore();
+
+function useCollection(name) {
+  const [data, setData] = useState([]);
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const unsub = fdb.collection(name).onSnapshot(snap => {
+      setData(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      setReady(true);
+    }, err => { console.error("Firestore (" + name + "):", err); setReady(true); });
+    return unsub;
+  }, []);
+  return [data, ready];
+}
+const setItem = (name, id, data) => fdb.collection(name).doc(id).set(data, { merge: true });
+const updateItem = (name, id, data) => fdb.collection(name).doc(id).update(data);
+const removeItem = (name, id) => fdb.collection(name).doc(id).delete();
+const getDoc = (name, id) => fdb.collection(name).doc(id).get();
+
+// ═══════════════════════════════════════════════════════════
+// UTILITIES
+// ═══════════════════════════════════════════════════════════
+const genId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+function getLocation(timeout) {
+  timeout = timeout || 8000;
+  return new Promise(function (resolve) {
+    if (!navigator.geolocation) { resolve(null); return; }
+    var done = false;
+    function finish(loc) { if (!done) { done = true; resolve(loc); } }
+    var t = setTimeout(function () { finish(null); }, timeout);
+    navigator.geolocation.getCurrentPosition(
+      function (pos) { clearTimeout(t); finish({ lat: pos.coords.latitude, lng: pos.coords.longitude }); },
+      function () {
+        navigator.geolocation.getCurrentPosition(
+          function (pos) { clearTimeout(t); finish({ lat: pos.coords.latitude, lng: pos.coords.longitude }); },
+          function () { clearTimeout(t); finish(null); },
+          { enableHighAccuracy: false, timeout: timeout, maximumAge: 60000 }
+        );
+      },
+      { enableHighAccuracy: true, timeout: Math.floor(timeout / 2), maximumAge: 10000 }
+    );
+  });
+}
+function todayKey() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function parseHM(s) { const p = (s || "08:00").split(":"); return (parseInt(p[0], 10) || 0) * 60 + (parseInt(p[1], 10) || 0); }
+function minutesOfDay(iso) { const d = new Date(iso); return d.getHours() * 60 + d.getMinutes(); }
+function minutesBetween(isoA, isoB) { return Math.round((new Date(isoB) - new Date(isoA)) / 60000); }
+function minutesToHM(m) { m = Math.max(0, Math.round(m)); const hh = Math.floor(m / 60), mm = m % 60; return hh + "h" + (mm ? " " + mm + "min" : ""); }
+const fmt = {
+  timeOnly: (iso) => iso ? new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "—",
+  dateBR: (s) => { if (!s) return "—"; const p = s.split("-"); return p[2] + "/" + p[1] + "/" + p[0]; },
+  dateTimeBR: (iso) => iso ? new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—"
+};
+function getNextPunchType(rec) {
+  if (!rec || !rec.in) return "in";
+  if (!rec.lunchOut) return "lunchOut";
+  if (!rec.lunchIn) return "lunchIn";
+  if (!rec.out) return "out";
+  return null;
+}
+const PUNCH_LABEL = { in: "Entrada", lunchOut: "Saída Almoço", lunchIn: "Volta Almoço", out: "Saída" };
+
+async function registerPunch(user, type, photo, loc) {
+  const dateStr = todayKey();
+  const id = user.id + "_" + dateStr;
+  const now = new Date().toISOString();
+  const punchData = { time: now, lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, selfie: photo || null };
+  const snap = await getDoc("records", id);
+  let data = snap.exists ? snap.data() : { userId: user.id, userName: user.name, date: dateStr };
+  data[type] = punchData;
+  if (type === "in") {
+    const sched = parseHM(user.scheduleStart);
+    const actual = minutesOfDay(now);
+    const lateMinutes = Math.max(0, actual - sched);
+    data.lateMinutes = lateMinutes;
+    data.warning = lateMinutes > (user.toleranceMinutes != null ? user.toleranceMinutes : 15);
+    data.warningAck = false;
+  }
+  if (type === "out" && data.in && data.lunchOut && data.lunchIn) {
+    const worked = minutesBetween(data.in.time, data.lunchOut.time) + minutesBetween(data.lunchIn.time, data.out.time);
+    const expected = (parseHM(user.scheduleEnd) - parseHM(user.scheduleStart)) - (user.lunchMinutes != null ? user.lunchMinutes : 60);
+    data.workedMinutes = worked;
+    data.expectedMinutes = expected;
+    data.overtimeMinutes = Math.max(0, worked - expected);
+  }
+  await setItem("records", id, data);
+  return data;
+}
+
+function exportCSV(records) {
+  const rows = [["Colaborador", "Data", "Entrada", "Saída Almoço", "Volta Almoço", "Saída", "Horas Trabalhadas", "Horas Extras", "Atraso (min)", "Advertência"]];
+  records.forEach(r => {
+    rows.push([
+      r.userName || "", r.date || "",
+      r.in ? fmt.timeOnly(r.in.time) : "", r.lunchOut ? fmt.timeOnly(r.lunchOut.time) : "",
+      r.lunchIn ? fmt.timeOnly(r.lunchIn.time) : "", r.out ? fmt.timeOnly(r.out.time) : "",
+      r.workedMinutes ? minutesToHM(r.workedMinutes) : "", r.overtimeMinutes ? minutesToHM(r.overtimeMinutes) : "",
+      r.lateMinutes || 0, r.warning ? "SIM" : "NÃO"
+    ]);
+  });
+  const csv = rows.map(row => row.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(",")).join("\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = "ponto_" + todayKey() + ".csv";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ═══════════════════════════════════════════════════════════
+// ICONS
+// ═══════════════════════════════════════════════════════════
+function Icon({ name, size = 18, color = "currentColor", style = {} }) {
+  const s = { width: size, height: size, flexShrink: 0, ...style };
+  const c = { fill: "none", stroke: color, strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" };
+  switch (name) {
+    case "shield": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M12 2 L20 6 V11 C20 17 16.5 20.5 12 22 C7.5 20.5 4 17 4 11 V6 Z" }));
+    case "users": return h("svg", { viewBox: "0 0 24 24", style: s, ...c },
+      h("circle", { cx: 9, cy: 7, r: 3.2 }), h("path", { d: "M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" }),
+      h("circle", { cx: 17, cy: 8, r: 2.6 }), h("path", { d: "M15.5 14.3c2.6.4 4.5 2.6 4.5 5.7" })
+    );
+    case "mappin": return h("svg", { viewBox: "0 0 24 24", style: s, ...c },
+      h("path", { d: "M12 22s7-7.2 7-12.5A7 7 0 0 0 5 9.5C5 14.8 12 22 12 22Z" }), h("circle", { cx: 12, cy: 9.5, r: 2.3 })
+    );
+    case "logout": return h("svg", { viewBox: "0 0 24 24", style: s, ...c },
+      h("path", { d: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" }), h("path", { d: "M16 17l5-5-5-5" }), h("path", { d: "M21 12H9" })
+    );
+    case "plus": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M12 5v14M5 12h14" }));
+    case "check": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M5 13l4 4L19 7" }));
+    case "x": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M6 6l12 12M18 6L6 18" }));
+    case "camera": return h("svg", { viewBox: "0 0 24 24", style: s, ...c },
+      h("path", { d: "M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z" }), h("circle", { cx: 12, cy: 13, r: 3.3 })
+    );
+    case "barchart": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M5 20V11M12 20V4M19 20v-7" }));
+    case "eye": return h("svg", { viewBox: "0 0 24 24", style: s, ...c },
+      h("path", { d: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7Z" }), h("circle", { cx: 12, cy: 12, r: 2.8 })
+    );
+    case "eyeoff": return h("svg", { viewBox: "0 0 24 24", style: s, ...c },
+      h("path", { d: "M2 12s4-7 10-7c2 0 3.7.6 5.1 1.4M22 12s-1.5 2.6-4 4.4M9.9 9.9a2.8 2.8 0 0 0 3.9 3.9" }), h("path", { d: "M3 3l18 18" })
+    );
+    case "trash": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14" }));
+    case "edit": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M4 20h4l11-11-4-4L4 16Z" }));
+    case "chevronright": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M9 5l7 7-7 7" }));
+    case "alert": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M12 3 2 21h20Z" }), h("path", { d: "M12 10v4M12 17.5h.01" }));
+    case "home": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M4 11.5 12 4l8 7.5" }), h("path", { d: "M6 10v10h12V10" }));
+    case "filetext": return h("svg", { viewBox: "0 0 24 24", style: s, ...c },
+      h("path", { d: "M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z" }), h("path", { d: "M9 12h6M9 16h6" })
+    );
+    case "arrowleft": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M19 12H5M12 5l-7 7 7 7" }));
+    case "clock": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("circle", { cx: 12, cy: 12, r: 9 }), h("path", { d: "M12 7v5l3.5 2" }));
+    case "calendar": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("rect", { x: 3, y: 5, width: 18, height: 16, rx: 2 }), h("path", { d: "M16 3v4M8 3v4M3 10h18" }));
+    case "coffee": return h("svg", { viewBox: "0 0 24 24", style: s, ...c },
+      h("path", { d: "M4 9h13a3 3 0 0 1 0 6h-1" }), h("path", { d: "M4 9v7a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V9" }), h("path", { d: "M8 2v2M12 2v2" })
+    );
+    case "checkcircle": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("circle", { cx: 12, cy: 12, r: 9 }), h("path", { d: "M8 12.5l2.5 2.5L16 9.5" }));
+    default: return null;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+// DESIGN TOKENS
+// ═══════════════════════════════════════════════════════════
+const C = { bg: "#0a0f1e", card: "#111827", border: "#1e293b", blue: "#1e6fff", muted: "#64748b" };
+const Card = ({ children, style = {} }) => h("div", { style: { background: C.card, borderRadius: 16, border: "1px solid " + C.border, ...style } }, children);
+const Btn = ({ children, onClick, color = C.blue, style = {}, disabled = false }) => h("button", { onClick, disabled, style: { background: disabled ? "#1e293b" : color, color: disabled ? "#475569" : "#fff", border: "none", borderRadius: 12, padding: "12px 20px", fontWeight: 700, fontSize: 14, cursor: disabled ? "not-allowed" : "pointer", ...style } }, children);
+
+// ═══════════════════════════════════════════════════════════
+// CÂMERA DE SELFIE
+// ═══════════════════════════════════════════════════════════
+function SelfieCam({ onCapture, onCancel }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const canvasRef = useRef(null);
+  const [photo, setPhoto] = useState(null);
+  const [err, setErr] = useState("");
+  const [starting, setStarting] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 480 } } });
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
+        setStarting(false);
+      } catch (e) { setErr("Câmera indisponível (" + (e.message || "erro") + ")"); setStarting(false); }
+    })();
+    return () => { if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop()); };
+  }, []);
+
+  const capture = () => {
+    const v = videoRef.current; if (!v || !v.videoWidth) return;
+    const w = 240, hh = Math.round(w * (v.videoHeight / v.videoWidth));
+    const canvas = canvasRef.current;
+    canvas.width = w; canvas.height = hh;
+    canvas.getContext("2d").drawImage(v, 0, 0, w, hh);
+    setPhoto(canvas.toDataURL("image/jpeg", 0.6));
+  };
+
+  const confirm = () => { if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop()); onCapture(photo); };
+
+  return h("div", { style: { position: "fixed", inset: 0, background: "#000", zIndex: 200, display: "flex", flexDirection: "column" } },
+    h("div", { style: { flex: 1, position: "relative", display: "flex", alignItems: "center", justifyContent: "center" } },
+      !photo && h("video", { ref: videoRef, autoPlay: true, playsInline: true, muted: true, style: { width: "100%", height: "100%", objectFit: "cover", display: starting ? "none" : "block" } }),
+      photo && h("img", { src: photo, style: { width: "100%", height: "100%", objectFit: "cover" } }),
+      starting && !err && h("div", { style: { color: "#fff", textAlign: "center" } }, "Abrindo câmera..."),
+      err && h("div", { style: { color: "#fca5a5", textAlign: "center", padding: 20 } }, err)
+    ),
+    h("canvas", { ref: canvasRef, style: { display: "none" } }),
+    h("div", { style: { padding: 16, display: "flex", gap: 12, justifyContent: "center", background: "#000", flexWrap: "wrap" } },
+      h(Btn, { onClick: onCancel, color: "#1e293b" }, "Cancelar"),
+      err && h(Btn, { onClick: () => onCapture(null), color: "#475569" }, "Continuar sem foto"),
+      !photo && !err && h(Btn, { onClick: capture, disabled: starting }, "📸 Capturar"),
+      photo && h(Btn, { onClick: () => setPhoto(null), color: "#475569" }, "Repetir"),
+      photo && h(Btn, { onClick: confirm, color: "#00d68f", style: { color: "#04150d" } }, "Confirmar")
+    )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// ROOT
+// ═══════════════════════════════════════════════════════════
+function App() {
+  const [user, setUser] = useState(null);
+  const [employees, employeesReady] = useCollection("employees");
+  const [records] = useCollection("records");
+  const [justifications] = useCollection("justifications");
+
+  useEffect(() => {
+    if (employeesReady && employees.length === 0) {
+      setItem("employees", "admin-seed", { name: "Administrador", username: "admin", password: "admin123", role: "admin", active: true, scheduleStart: "08:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15, createdAt: new Date().toISOString() }).catch(() => {});
+    }
+  }, [employeesReady, employees.length]);
+
+  if (!employeesReady) return h("div", { style: { minHeight: "100vh", background: C.bg, display: "flex", alignItems: "center", justifyContent: "center" } },
+    h("div", { style: { textAlign: "center" } },
+      h("div", { style: { width: 72, height: 72, borderRadius: "50%", background: "linear-gradient(135deg,#1e6fff,#00b4ff)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", boxShadow: "0 0 40px rgba(30,111,255,0.5)" } }, h(Icon, { name: "clock", size: 36, color: "#fff" })),
+      h("div", { style: { color: "#fff", fontWeight: 900, fontSize: 24, letterSpacing: 6 } }, "A.H.S PONTO"),
+      h("div", { style: { color: "#1e6fff", fontSize: 10, letterSpacing: 4, marginTop: 4 } }, "CONECTANDO...")
+    )
+  );
+
+  if (!user) return h(Login, { employees, onLogin: setUser });
+  if (user.role === "admin") return h(Admin, { currentUser: user, employees, records, justifications, onLogout: () => setUser(null) });
+  return h(Employee, { currentUser: user, records, justifications, onLogout: () => setUser(null) });
+}
+
+// ═══════════════════════════════════════════════════════════
+// LOGIN
+// ═══════════════════════════════════════════════════════════
+function Login({ employees, onLogin }) {
+  const [un, setUn] = useState("");
+  const [pw, setPw] = useState("");
+  const [show, setShow] = useState(false);
+  const [err, setErr] = useState("");
+  const login = () => {
+    const typed = un.trim().toLowerCase();
+    const u = employees.find(x => x.username.trim().toLowerCase() === typed && x.password === pw && x.active);
+    if (u) onLogin(u); else setErr("Usuário ou senha incorretos");
+  };
+  return h("div", { style: { minHeight: "100vh", background: "radial-gradient(ellipse at 60% 0%, #0d1f4a 0%, #0a0f1e 70%)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 } },
+    h("div", { style: { marginBottom: 40, textAlign: "center" } },
+      h("div", { style: { width: 88, height: 88, borderRadius: "50%", background: "linear-gradient(135deg,#1e6fff,#00b4ff)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px", boxShadow: "0 0 60px rgba(30,111,255,0.4)" } }, h(Icon, { name: "clock", size: 44, color: "#fff" })),
+      h("div", { style: { color: "#fff", fontWeight: 900, fontSize: 30, letterSpacing: 6 } }, "A.H.S PONTO"),
+      h("div", { style: { color: "#1e6fff", fontSize: 11, letterSpacing: 5, marginTop: 6 } }, "CONTROLE DE PONTO")
+    ),
+    h("div", { style: { width: "100%", maxWidth: 360 } },
+      h("div", { style: { marginBottom: 16 } },
+        h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 } }, "Usuário"),
+        h("input", { value: un, onChange: e => { setUn(e.target.value); setErr(""); }, onKeyDown: e => e.key === "Enter" && login(), placeholder: "Seu usuário", autoCapitalize: "none", autoCorrect: "off", spellCheck: false, style: { width: "100%", background: C.card, border: "1px solid " + C.border, borderRadius: 12, padding: "14px 16px", color: "#fff", fontSize: 15, outline: "none", boxSizing: "border-box" } })
+      ),
+      h("div", { style: { marginBottom: 24, position: "relative" } },
+        h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 } }, "Senha"),
+        h("input", { type: show ? "text" : "password", value: pw, onChange: e => { setPw(e.target.value); setErr(""); }, onKeyDown: e => e.key === "Enter" && login(), placeholder: "Sua senha", style: { width: "100%", background: C.card, border: "1px solid " + C.border, borderRadius: 12, padding: "14px 48px 14px 16px", color: "#fff", fontSize: 15, outline: "none", boxSizing: "border-box" } }),
+        h("button", { onClick: () => setShow(v => !v), style: { position: "absolute", right: 14, top: 38, background: "none", border: "none", cursor: "pointer", color: C.muted } }, h(Icon, { name: show ? "eyeoff" : "eye", size: 18 }))
+      ),
+      err && h("div", { style: { display: "flex", alignItems: "center", gap: 8, color: "#ff3d71", fontSize: 13, marginBottom: 16 } }, h(Icon, { name: "alert", size: 15 }), err),
+      h("button", { onClick: login, style: { width: "100%", background: "linear-gradient(135deg,#1e6fff,#00b4ff)", border: "none", borderRadius: 14, padding: 16, color: "#fff", fontWeight: 900, fontSize: 16, cursor: "pointer", boxShadow: "0 4px 24px rgba(30,111,255,0.4)" } }, "ENTRAR")
+    ),
+    h("div", { style: { color: "#1e293b", fontSize: 11, marginTop: 48 } }, "A.H.S Security System • v1.0")
+  );
+}
+
+function Header({ title, sub, onLogout }) {
+  return h("div", { style: { background: C.card, borderBottom: "1px solid " + C.border, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0 } },
+    h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+      h("div", { style: { width: 34, height: 34, borderRadius: 8, background: "linear-gradient(135deg,#1e6fff,#00b4ff)", display: "flex", alignItems: "center", justifyContent: "center" } }, h(Icon, { name: "clock", size: 17, color: "#fff" })),
+      h("div", null, h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 13, letterSpacing: 1 } }, "A.H.S PONTO"), h("div", { style: { color: "#1e6fff", fontSize: 10, letterSpacing: 1 } }, title))
+    ),
+    h("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
+      h("span", { style: { color: C.muted, fontSize: 12 } }, sub),
+      h("button", { onClick: onLogout, style: { background: "none", border: "none", cursor: "pointer", color: C.muted } }, h(Icon, { name: "logout", size: 18 }))
+    )
+  );
+}
+
+function BottomNav({ tabs, active, onChange }) {
+  return h("div", { style: { background: C.card, borderTop: "1px solid " + C.border, display: "flex", flexShrink: 0 } },
+    tabs.map(t => h("button", { key: t.id, onClick: () => onChange(t.id), style: { flex: 1, padding: "10px 0", display: "flex", flexDirection: "column", alignItems: "center", gap: 3, background: "none", border: "none", cursor: "pointer", color: active === t.id ? "#1e6fff" : C.muted } },
+      h(Icon, { name: t.icon, size: 20 }), h("span", { style: { fontSize: 10 } }, t.label)
+    ))
+  );
+}
+
+function BottomModal({ title, children, onClose }) {
+  return h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 99 } },
+    h("div", { style: { background: C.card, borderRadius: "24px 24px 0 0", width: "100%", maxWidth: 500, maxHeight: "90vh", overflowY: "auto", padding: 24, paddingBottom: 32 } },
+      h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 } },
+        h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 16 } }, title),
+        h("button", { onClick: onClose, style: { background: "none", border: "none", cursor: "pointer", color: C.muted } }, h(Icon, { name: "x", size: 20 }))
+      ),
+      children
+    )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// ADMIN
+// ═══════════════════════════════════════════════════════════
+function Admin({ currentUser, employees, records, justifications, onLogout }) {
+  const [tab, setTab] = useState("dash");
+  const pendingCount = justifications.filter(j => j.status === "pending").length;
+  const tabs = [
+    { id: "dash", icon: "barchart", label: "Painel" },
+    { id: "employees", icon: "users", label: "Equipe" },
+    { id: "records", icon: "calendar", label: "Registros" },
+    { id: "justifications", icon: "filetext", label: "Justific." + (pendingCount ? " (" + pendingCount + ")" : "") }
+  ];
+  return h("div", { style: { minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" } },
+    h(Header, { title: "Painel Administrativo", sub: currentUser.name, onLogout }),
+    h("div", { style: { flex: 1, overflowY: "auto", paddingBottom: 8 } },
+      tab === "dash" && h(ADash, { employees, records, justifications }),
+      tab === "employees" && h(AEmployees, { employees }),
+      tab === "records" && h(ARecords, { records }),
+      tab === "justifications" && h(AJustifications, { justifications })
+    ),
+    h(BottomNav, { tabs, active: tab, onChange: setTab })
+  );
+}
+
+function ADash({ employees, records, justifications }) {
+  const today = todayKey();
+  const todayRecs = records.filter(r => r.date === today);
+  const activeEmployees = employees.filter(e => e.role !== "admin" && e.active);
+  const lateToday = todayRecs.filter(r => r.warning).length;
+  const pendingJust = justifications.filter(j => j.status === "pending").length;
+  const stats = [
+    { l: "Colaboradores", v: activeEmployees.length, c: "#a78bfa" },
+    { l: "Pontos Hoje", v: todayRecs.length, c: "#1e6fff" },
+    { l: "Atrasos Hoje", v: lateToday, c: "#ff3d71" },
+    { l: "Justif. Pendentes", v: pendingJust, c: "#ffb300" }
+  ];
+  return h("div", { style: { padding: 16 } },
+    h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Dashboard"),
+    h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 } },
+      stats.map((s, i) => h(Card, { key: i, style: { padding: 16 } }, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 6, letterSpacing: 1 } }, s.l), h("div", { style: { color: s.c, fontSize: 30, fontWeight: 900 } }, s.v)))
+    ),
+    h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 2, textTransform: "uppercase", marginBottom: 10 } }, "Status hoje"),
+    h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+      activeEmployees.length === 0 && h(Card, { style: { padding: 24, textAlign: "center" } }, h("div", { style: { color: C.muted, fontSize: 13 } }, "Nenhum colaborador cadastrado")),
+      activeEmployees.map(emp => {
+        const rec = todayRecs.find(r => r.userId === emp.id);
+        const status = !rec || !rec.in ? "Não chegou" : !rec.lunchOut ? "Em expediente" : !rec.lunchIn ? "Em almoço" : !rec.out ? "Em expediente" : "Concluído";
+        const color = !rec || !rec.in ? "#475569" : status === "Concluído" ? "#00d68f" : "#ffb300";
+        return h(Card, { key: emp.id, style: { padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 } },
+          h("div", { style: { width: 8, height: 8, borderRadius: "50%", background: color, flexShrink: 0 } }),
+          h("div", { style: { flex: 1, minWidth: 0 } }, h("div", { style: { color: "#fff", fontSize: 13, fontWeight: 600 } }, emp.name)),
+          rec && rec.warning && h(Icon, { name: "alert", size: 14, color: "#ff3d71" }),
+          h("span", { style: { color: color, fontSize: 11 } }, status)
+        );
+      })
+    )
+  );
+}
+
+function AEmployees({ employees }) {
+  const [modal, setModal] = useState(null);
+  const blank = { name: "", username: "", password: "", role: "employee", scheduleStart: "08:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15 };
+  const [form, setForm] = useState(blank);
+  const [err, setErr] = useState("");
+  const open = (e) => { setForm(e ? { name: e.name, username: e.username, password: e.password, role: e.role, scheduleStart: e.scheduleStart || "08:00", scheduleEnd: e.scheduleEnd || "17:00", lunchMinutes: e.lunchMinutes != null ? e.lunchMinutes : 60, toleranceMinutes: e.toleranceMinutes != null ? e.toleranceMinutes : 15 } : blank); setModal(e || "new"); setErr(""); };
+  const save = async () => {
+    if (!form.name.trim() || !form.username.trim() || !form.password.trim()) { setErr("Preencha nome, usuário e senha"); return; }
+    const uname = form.username.trim().toLowerCase();
+    if (employees.find(e => e.username === uname && (modal === "new" || e.id !== modal.id))) { setErr("Usuário já existe"); return; }
+    const data = { ...form, username: uname, lunchMinutes: Number(form.lunchMinutes) || 0, toleranceMinutes: Number(form.toleranceMinutes) || 0 };
+    if (modal === "new") await setItem("employees", genId(), { ...data, active: true, createdAt: new Date().toISOString() });
+    else await updateItem("employees", modal.id, data);
+    setModal(null);
+  };
+  const del = async (id) => { if (!confirm("Excluir colaborador?")) return; await removeItem("employees", id); };
+  const toggle = async (e) => { await updateItem("employees", e.id, { active: !e.active }); };
+  return h("div", { style: { padding: 16 } },
+    h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 } },
+      h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20 } }, "Equipe"),
+      h(Btn, { onClick: () => open(null), style: { padding: "8px 14px", fontSize: 13, display: "flex", alignItems: "center", gap: 6 } }, h(Icon, { name: "plus", size: 15 }), "Novo")
+    ),
+    h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+      employees.map(e => h(Card, { key: e.id, style: { padding: "12px 14px", display: "flex", alignItems: "center", gap: 12 } },
+        h("div", { style: { width: 40, height: 40, borderRadius: "50%", background: e.role === "admin" ? "#4c1d95" : "#1e3a8a", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 900, fontSize: 15, flexShrink: 0 } }, e.name.charAt(0).toUpperCase()),
+        h("div", { style: { flex: 1, minWidth: 0 } },
+          h("div", { style: { color: "#fff", fontWeight: 600, fontSize: 14 } }, e.name),
+          h("div", { style: { color: C.muted, fontSize: 11 } }, "@" + e.username + " • " + (e.role === "admin" ? "Admin" : (e.scheduleStart || "08:00") + "–" + (e.scheduleEnd || "17:00")))
+        ),
+        h("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
+          h("button", { onClick: () => toggle(e), style: { width: 10, height: 10, borderRadius: "50%", background: e.active ? "#00d68f" : "#475569", border: "none", cursor: "pointer", flexShrink: 0 } }),
+          h("button", { onClick: () => open(e), style: { background: "none", border: "none", cursor: "pointer", color: C.muted } }, h(Icon, { name: "edit", size: 15 })),
+          e.id !== "admin-seed" && h("button", { onClick: () => del(e.id), style: { background: "none", border: "none", cursor: "pointer", color: C.muted } }, h(Icon, { name: "trash", size: 15 }))
+        )
+      ))
+    ),
+    modal && h(BottomModal, { title: modal === "new" ? "Novo Colaborador" : "Editar Colaborador", onClose: () => setModal(null) },
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },
+        h("input", { placeholder: "Nome completo", value: form.name, onChange: e => setForm(p => ({ ...p, name: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none" } }),
+        h("input", { placeholder: "Usuário (login)", value: form.username, autoCapitalize: "none", autoCorrect: "off", onChange: e => setForm(p => ({ ...p, username: e.target.value.toLowerCase() })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none" } }),
+        h("input", { type: "password", placeholder: "Senha", value: form.password, onChange: e => setForm(p => ({ ...p, password: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none" } }),
+        h("select", { value: form.role, onChange: e => setForm(p => ({ ...p, role: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none" } },
+          h("option", { value: "employee" }, "Colaborador"), h("option", { value: "admin" }, "Administrador")
+        )
+      ),
+      h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 } }, "Jornada de trabalho"),
+      h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 } },
+        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Entrada"), h("input", { type: "time", value: form.scheduleStart, onChange: e => setForm(p => ({ ...p, scheduleStart: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } })),
+        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Saída"), h("input", { type: "time", value: form.scheduleEnd, onChange: e => setForm(p => ({ ...p, scheduleEnd: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } })),
+        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Almoço (min)"), h("input", { type: "number", value: form.lunchMinutes, onChange: e => setForm(p => ({ ...p, lunchMinutes: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } })),
+        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Tolerância atraso (min)"), h("input", { type: "number", value: form.toleranceMinutes, onChange: e => setForm(p => ({ ...p, toleranceMinutes: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } }))
+      ),
+      err && h("div", { style: { color: "#ff3d71", fontSize: 12, marginBottom: 10 } }, err),
+      h("div", { style: { display: "flex", gap: 10 } }, h(Btn, { onClick: () => setModal(null), color: "#1e293b", style: { flex: 1 } }, "Cancelar"), h(Btn, { onClick: save, style: { flex: 1 } }, "Salvar"))
+    )
+  );
+}
+
+function PunchRow({ label, p }) {
+  return h("div", { style: { display: "flex", alignItems: "center", gap: 10, padding: "8px 0" } },
+    p && p.selfie ? h("img", { src: p.selfie, style: { width: 38, height: 38, borderRadius: 8, objectFit: "cover", flexShrink: 0 } }) : h("div", { style: { width: 38, height: 38, borderRadius: 8, background: C.bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 } }, h(Icon, { name: "x", size: 14, color: "#475569" })),
+    h("div", { style: { flex: 1 } },
+      h("div", { style: { color: C.muted, fontSize: 10, letterSpacing: 1, textTransform: "uppercase" } }, label),
+      h("div", { style: { color: "#fff", fontSize: 14, fontWeight: 600 } }, p ? fmt.timeOnly(p.time) : "—")
+    ),
+    p && p.lat != null && h("a", { href: "https://www.google.com/maps?q=" + p.lat + "," + p.lng, target: "_blank", rel: "noopener", style: { color: "#60a5fa", display: "flex", alignItems: "center", gap: 4, fontSize: 11, textDecoration: "none" } }, h(Icon, { name: "mappin", size: 14, color: "#60a5fa" }), "Mapa")
+  );
+}
+
+function ARecords({ records }) {
+  const [detail, setDetail] = useState(null);
+  if (detail) return h("div", { style: { padding: 16 } },
+    h("button", { onClick: () => setDetail(null), style: { display: "flex", alignItems: "center", gap: 8, color: C.muted, background: "none", border: "none", cursor: "pointer", marginBottom: 16, fontSize: 13 } }, h(Icon, { name: "arrowleft", size: 17 }), "Voltar"),
+    h(Card, { style: { padding: 16, marginBottom: 12 } },
+      h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 18 } }, detail.userName),
+      h("div", { style: { color: "#94a3b8", fontSize: 13, marginTop: 2 } }, fmt.dateBR(detail.date)),
+      detail.warning && h("div", { style: { display: "flex", alignItems: "center", gap: 6, color: "#ff3d71", fontSize: 12, marginTop: 8, background: "rgba(255,61,113,0.1)", padding: "6px 10px", borderRadius: 8 } }, h(Icon, { name: "alert", size: 14, color: "#ff3d71" }), "Advertência automática — atraso de " + detail.lateMinutes + " min"),
+      detail.workedMinutes != null && h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 } },
+        h("div", null, h("div", { style: { color: "#475569", fontSize: 10 } }, "TRABALHADO"), h("div", { style: { color: "#fff", fontSize: 13, marginTop: 2 } }, minutesToHM(detail.workedMinutes))),
+        h("div", null, h("div", { style: { color: "#475569", fontSize: 10 } }, "HORA EXTRA"), h("div", { style: { color: detail.overtimeMinutes > 0 ? "#00d68f" : "#fff", fontSize: 13, marginTop: 2 } }, minutesToHM(detail.overtimeMinutes || 0)))
+      )
+    ),
+    h(Card, { style: { padding: "4px 14px" } },
+      h(PunchRow, { label: "Entrada", p: detail.in }),
+      h(PunchRow, { label: "Saída Almoço", p: detail.lunchOut }),
+      h(PunchRow, { label: "Volta Almoço", p: detail.lunchIn }),
+      h(PunchRow, { label: "Saída", p: detail.out })
+    )
+  );
+  return h("div", { style: { padding: 16 } },
+    h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 } },
+      h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20 } }, "Registros"),
+      records.length > 0 && h(Btn, { onClick: () => exportCSV(records), color: "#1e293b", style: { padding: "8px 12px", fontSize: 12 } }, "Exportar CSV")
+    ),
+    records.length === 0 ? h(Card, { style: { padding: 40, textAlign: "center" } }, h("div", { style: { color: C.muted } }, "Nenhum registro ainda")) :
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+        records.slice().sort((a, b) => (b.date + (b.in ? b.in.time : "")).localeCompare(a.date + (a.in ? a.in.time : ""))).map(r => h("button", { key: r.id, onClick: () => setDetail(r), style: { background: C.card, border: "1px solid " + C.border, borderRadius: 12, padding: "12px 14px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer", textAlign: "left", width: "100%" } },
+          h("div", { style: { width: 8, height: 8, borderRadius: "50%", background: r.warning ? "#ff3d71" : "#00d68f", flexShrink: 0 } }),
+          h("div", { style: { flex: 1, minWidth: 0 } }, h("div", { style: { color: "#fff", fontWeight: 600, fontSize: 13 } }, r.userName), h("div", { style: { color: C.muted, fontSize: 11 } }, fmt.dateBR(r.date) + " • " + (r.in ? fmt.timeOnly(r.in.time) : "—") + " - " + (r.out ? fmt.timeOnly(r.out.time) : "—"))),
+          h(Icon, { name: "chevronright", size: 15, color: C.muted })
+        ))
+      )
+  );
+}
+
+function AJustifications({ justifications }) {
+  const respond = async (j, status) => { await updateItem("justifications", j.id, { status, respondedAt: new Date().toISOString() }); };
+  const STJ = { pending: { l: "Pendente", c: "#ffb300" }, approved: { l: "Aprovada", c: "#00d68f" }, rejected: { l: "Rejeitada", c: "#ff3d71" } };
+  return h("div", { style: { padding: 16 } },
+    h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Justificativas"),
+    justifications.length === 0 ? h(Card, { style: { padding: 40, textAlign: "center" } }, h("div", { style: { color: C.muted } }, "Nenhuma justificativa")) :
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        justifications.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map(j => h(Card, { key: j.id, style: { padding: 14 } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
+            h("div", null,
+              h("div", { style: { color: "#fff", fontWeight: 700, fontSize: 14 } }, j.userName),
+              h("div", { style: { color: C.muted, fontSize: 11, marginTop: 2 } }, fmt.dateBR(j.date) + " • " + (j.type || ""))
+            ),
+            h("span", { style: { background: (STJ[j.status] || STJ.pending).c + "22", color: (STJ[j.status] || STJ.pending).c, fontSize: 10, padding: "3px 8px", borderRadius: 20, fontWeight: 700 } }, (STJ[j.status] || STJ.pending).l)
+          ),
+          h("div", { style: { color: "#cbd5e1", fontSize: 13, marginTop: 8 } }, j.reason),
+          j.status === "pending" && h("div", { style: { display: "flex", gap: 8, marginTop: 10 } },
+            h(Btn, { onClick: () => respond(j, "rejected"), color: "#7f1d1d", style: { flex: 1, padding: "8px", fontSize: 12 } }, "Rejeitar"),
+            h(Btn, { onClick: () => respond(j, "approved"), color: "#166534", style: { flex: 1, padding: "8px", fontSize: 12 } }, "Aprovar")
+          )
+        ))
+      )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// EMPLOYEE
+// ═══════════════════════════════════════════════════════════
+function Employee({ currentUser, records, justifications, onLogout }) {
+  const [tab, setTab] = useState("punch");
+  const myRecords = records.filter(r => r.userId === currentUser.id);
+  const myJust = justifications.filter(j => j.userId === currentUser.id);
+  const tabs = [{ id: "punch", icon: "clock", label: "Bater Ponto" }, { id: "history", icon: "calendar", label: "Histórico" }, { id: "just", icon: "filetext", label: "Justificativas" }];
+  return h("div", { style: { minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" } },
+    h(Header, { title: "Olá, " + currentUser.name.split(" ")[0], sub: "", onLogout }),
+    h("div", { style: { flex: 1, overflowY: "auto", paddingBottom: 8 } },
+      tab === "punch" && h(EPunch, { currentUser, records: myRecords }),
+      tab === "history" && h(EHistory, { records: myRecords }),
+      tab === "just" && h(EJustifications, { currentUser, justifications: myJust })
+    ),
+    h(BottomNav, { tabs, active: tab, onChange: setTab })
+  );
+}
+
+function EPunch({ currentUser, records }) {
+  const [showCam, setShowCam] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const today = todayKey();
+  const todayRecord = records.find(r => r.date === today) || null;
+  const nextType = getNextPunchType(todayRecord);
+  const unack = records.find(r => r.warning && !r.warningAck);
+
+  const dismissWarning = async () => { if (unack) await updateItem("records", unack.id, { warningAck: true }); };
+
+  const handleCapture = async (photo) => {
+    setShowCam(false); setBusy(true);
+    try {
+      const loc = await getLocation();
+      await registerPunch(currentUser, nextType, photo, loc);
+    } catch (e) { alert("Erro ao registrar ponto: " + e.message); }
+    setBusy(false);
+  };
+
+  return h("div", { style: { padding: 16 } },
+    showCam && h(SelfieCam, { onCapture: handleCapture, onCancel: () => setShowCam(false) }),
+    unack && h("div", { style: { background: "rgba(255,61,113,0.1)", border: "1px solid rgba(255,61,113,0.3)", borderRadius: 14, padding: 14, marginBottom: 16 } },
+      h("div", { style: { display: "flex", alignItems: "center", gap: 8, color: "#ff3d71", fontWeight: 700, fontSize: 13 } }, h(Icon, { name: "alert", size: 16, color: "#ff3d71" }), "Advertência por atraso"),
+      h("div", { style: { color: "#fca5a5", fontSize: 12, marginTop: 4 } }, "No dia " + fmt.dateBR(unack.date) + " você chegou " + unack.lateMinutes + " min atrasado (acima da tolerância)."),
+      h("button", { onClick: dismissWarning, style: { marginTop: 10, background: "#7f1d1d", border: "none", borderRadius: 8, padding: "6px 14px", color: "#fff", fontSize: 12, cursor: "pointer" } }, "Entendi")
+    ),
+    h(Card, { style: { padding: 20, textAlign: "center", marginBottom: 16 } },
+      h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 } }, fmt.dateBR(today)),
+      nextType ? h(React.Fragment, null,
+        h("div", { style: { color: "#fff", fontSize: 15, marginBottom: 16 } }, "Próximo registro: ", h("b", null, PUNCH_LABEL[nextType])),
+        h(Btn, { onClick: () => setShowCam(true), disabled: busy, style: { padding: "16px 32px", fontSize: 16, width: "100%" } }, busy ? "Registrando..." : "📸 Bater Ponto")
+      ) : h("div", { style: { color: "#00d68f", fontWeight: 700, fontSize: 16 } }, "✓ Jornada concluída hoje")
+    ),
+    todayRecord && h(Card, { style: { padding: "4px 14px" } },
+      h(PunchRow, { label: "Entrada", p: todayRecord.in }),
+      h(PunchRow, { label: "Saída Almoço", p: todayRecord.lunchOut }),
+      h(PunchRow, { label: "Volta Almoço", p: todayRecord.lunchIn }),
+      h(PunchRow, { label: "Saída", p: todayRecord.out })
+    )
+  );
+}
+
+function EHistory({ records }) {
+  return h("div", { style: { padding: 16 } },
+    h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Meu Histórico"),
+    records.length === 0 ? h(Card, { style: { padding: 40, textAlign: "center" } }, h("div", { style: { color: C.muted } }, "Nenhum registro ainda")) :
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+        records.slice().sort((a, b) => b.date.localeCompare(a.date)).map(r => h(Card, { key: r.id, style: { padding: 14 } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
+            h("div", null,
+              h("div", { style: { color: "#fff", fontWeight: 700 } }, fmt.dateBR(r.date)),
+              h("div", { style: { color: C.muted, fontSize: 11, marginTop: 2 } }, (r.in ? fmt.timeOnly(r.in.time) : "—") + " - " + (r.out ? fmt.timeOnly(r.out.time) : "—"))
+            ),
+            r.warning && h("span", { style: { background: "rgba(255,61,113,0.15)", color: "#ff3d71", fontSize: 10, padding: "3px 8px", borderRadius: 20, fontWeight: 700 } }, "Advertência")
+          ),
+          r.workedMinutes != null && h("div", { style: { display: "flex", gap: 16, marginTop: 8 } },
+            h("div", { style: { color: "#94a3b8", fontSize: 12 } }, "Trabalhado: " + minutesToHM(r.workedMinutes)),
+            r.overtimeMinutes > 0 && h("div", { style: { color: "#00d68f", fontSize: 12 } }, "Extra: " + minutesToHM(r.overtimeMinutes))
+          )
+        ))
+      )
+  );
+}
+
+function EJustifications({ currentUser, justifications }) {
+  const [form, setForm] = useState({ date: todayKey(), type: "Atraso", reason: "" });
+  const [sent, setSent] = useState(false);
+  const STJ = { pending: { l: "Pendente", c: "#ffb300" }, approved: { l: "Aprovada", c: "#00d68f" }, rejected: { l: "Rejeitada", c: "#ff3d71" } };
+  const send = async () => {
+    if (!form.reason.trim()) return;
+    await setItem("justifications", genId(), { userId: currentUser.id, userName: currentUser.name, date: form.date, type: form.type, reason: form.reason.trim(), status: "pending", createdAt: new Date().toISOString() });
+    setForm({ date: todayKey(), type: "Atraso", reason: "" });
+    setSent(true); setTimeout(() => setSent(false), 2500);
+  };
+  return h("div", { style: { padding: 16 } },
+    h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Justificativas"),
+    h(Card, { style: { padding: 16, marginBottom: 20 } },
+      h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 } }, "Nova justificativa"),
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
+        h("input", { type: "date", value: form.date, onChange: e => setForm(p => ({ ...p, date: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } }),
+        h("select", { value: form.type, onChange: e => setForm(p => ({ ...p, type: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } },
+          h("option", { value: "Atraso" }, "Atraso"), h("option", { value: "Falta" }, "Falta"), h("option", { value: "Outro" }, "Outro")
+        ),
+        h("textarea", { value: form.reason, onChange: e => setForm(p => ({ ...p, reason: e.target.value })), placeholder: "Explique o motivo...", rows: 3, style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none", resize: "vertical" } }),
+        h(Btn, { onClick: send, disabled: !form.reason.trim() }, sent ? "✓ Enviado!" : "Enviar Justificativa")
+      )
+    ),
+    h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 } }, "Minhas justificativas"),
+    justifications.length === 0 ? h(Card, { style: { padding: 24, textAlign: "center" } }, h("div", { style: { color: C.muted, fontSize: 13 } }, "Nenhuma enviada ainda")) :
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        justifications.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map(j => h(Card, { key: j.id, style: { padding: 14 } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
+            h("div", null, h("div", { style: { color: "#fff", fontWeight: 700, fontSize: 13 } }, fmt.dateBR(j.date) + " • " + j.type)),
+            h("span", { style: { background: (STJ[j.status] || STJ.pending).c + "22", color: (STJ[j.status] || STJ.pending).c, fontSize: 10, padding: "3px 8px", borderRadius: 20, fontWeight: 700 } }, (STJ[j.status] || STJ.pending).l)
+          ),
+          h("div", { style: { color: "#94a3b8", fontSize: 12, marginTop: 6 } }, j.reason)
+        ))
+      )
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(h(App));
+})();
+</script>
+
+<script>
+  setTimeout(function() {
+    var root = document.getElementById('root');
+    if (root && root.children.length === 0) {
+      showErr('NADA CARREGOU depois de 6 segundos. Possíveis causas: sem internet, ou algum dos scripts (React/Firebase) foi bloqueado. Verifique a conexão e tente recarregar a página.');
+    }
+  }, 6000);
+</script>
+</body>
+</html>
