@@ -493,7 +493,8 @@ function ADash({ employees, records, justifications }) {
 }
 
 function AEmployees({ employees, currentUser }) {
-  const isOwner = !!(currentUser && currentUser.username === "123456");
+  const OWNER_LOGINS = ["admin", "123456"];
+  const isOwner = !!(currentUser && OWNER_LOGINS.indexOf(currentUser.username) !== -1);
   const [modal, setModal] = useState(null);
   const blank = { name: "", username: "", password: "", role: "employee", posto: "", scheduleStart: "08:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15 };
   const [form, setForm] = useState(blank);
