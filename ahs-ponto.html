@@ -4,6 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <title>A.H.S - Ponto</title>
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0a0f1e" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="AHS Ponto" />
+<link rel="apple-touch-icon" href="icon-192.png" />
 <style>
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body { margin: 0; font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background: #0a0f1e; }
@@ -1309,6 +1316,15 @@ ReactDOM.createRoot(document.getElementById("root")).render(h(App));
       showErr('NADA CARREGOU depois de 6 segundos. Possíveis causas: sem internet, ou algum dos scripts (React/Firebase) foi bloqueado. Verifique a conexão e tente recarregar a página.');
     }
   }, 6000);
+</script>
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", function () {
+      navigator.serviceWorker.register("sw.js").catch(function (e) {
+        console.log("SW não registrado:", e);
+      });
+    });
+  }
 </script>
 </body>
 </html>
