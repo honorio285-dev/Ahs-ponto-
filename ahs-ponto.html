@@ -259,6 +259,10 @@ function Icon({ name, size = 18, color = "currentColor", style = {} }) {
       h("path", { d: "M4 9h13a3 3 0 0 1 0 6h-1" }), h("path", { d: "M4 9v7a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V9" }), h("path", { d: "M8 2v2M12 2v2" })
     );
     case "checkcircle": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("circle", { cx: 12, cy: 12, r: 9 }), h("path", { d: "M8 12.5l2.5 2.5L16 9.5" }));
+    case "mail": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("rect", { x: 3, y: 5, width: 18, height: 14, rx: 2 }), h("path", { d: "M3 7l9 6 9-6" }));
+    case "pen": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M3 21l3-1 11-11-2-2L4 18Z" }), h("path", { d: "M14 6l2 2" }), h("path", { d: "M3 21h18" }));
+    case "send": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M21 3 11 13" }), h("path", { d: "M21 3l-7 18-4-8-8-4Z" }));
+    case "paperclip": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M21 11l-8.5 8.5a4 4 0 0 1-6-6L14 5a3 3 0 0 1 4 4l-8 8a1.5 1.5 0 0 1-2-2l7.5-7.5" }));
     default: return null;
   }
 }
@@ -334,6 +338,7 @@ function App() {
   const [employees, employeesReady] = useCollection("employees");
   const [records] = useCollection("records");
   const [justifications] = useCollection("justifications");
+  const [messages] = useCollection("messages");
 
   useEffect(() => {
     if (employeesReady && employees.length === 0) {
@@ -350,8 +355,8 @@ function App() {
   );
 
   if (!user) return h(Login, { employees, onLogin: setUser });
-  if (user.role === "admin") return h(Admin, { currentUser: user, employees, records, justifications, onLogout: () => setUser(null) });
-  return h(Employee, { currentUser: user, records, justifications, onLogout: () => setUser(null) });
+  if (user.role === "admin") return h(Admin, { currentUser: user, employees, records, justifications, messages, onLogout: () => setUser(null) });
+  return h(Employee, { currentUser: user, records, justifications, messages, onLogout: () => setUser(null) });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -433,16 +438,68 @@ function ImageViewer({ src, onClose }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════
-// ADMIN
-// ═══════════════════════════════════════════════════════════
-function Admin({ currentUser, employees, records, justifications, onLogout }) {
+function SignaturePad({ onConfirm, onCancel }) {
+  const canvasRef = useRef(null);
+  const drawing = useRef(false);
+  const last = useRef(null);
+  const drawn = useRef(false);
+  const [empty, setEmpty] = useState(true);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const ratio = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = Math.round(rect.width * ratio);
+    canvas.height = Math.round(rect.height * ratio);
+    const ctx = canvas.getContext("2d");
+    ctx.scale(ratio, ratio);
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, rect.width, rect.height);
+    ctx.lineWidth = 2.5; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#0f172a";
+  }, []);
+
+  const pos = (e) => {
+    const rect = canvasRef.current.getBoundingClientRect();
+    const t = e.touches && e.touches[0] ? e.touches[0] : e;
+    return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+  };
+  const start = (e) => { drawing.current = true; last.current = pos(e); };
+  const move = (e) => {
+    if (!drawing.current) return;
+    const ctx = canvasRef.current.getContext("2d");
+    const p = pos(e);
+    ctx.beginPath(); ctx.moveTo(last.current.x, last.current.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last.current = p; drawn.current = true; if (empty) setEmpty(false);
+  };
+  const end = () => { drawing.current = false; };
+  const clear = () => {
+    const canvas = canvasRef.current; const ctx = canvas.getContext("2d");
+    const rect = canvas.getBoundingClientRect();
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, rect.width, rect.height);
+    drawn.current = false; setEmpty(true);
+  };
+  const confirm = () => { if (!drawn.current) return; onConfirm(canvasRef.current.toDataURL("image/png")); };
+
+  return h("div", { style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 400, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 } },
+    h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 16, marginBottom: 6 } }, "Assine no quadro abaixo"),
+    h("div", { style: { color: "#94a3b8", fontSize: 12, marginBottom: 14, textAlign: "center" } }, "Use o dedo para assinar e confirme o recebimento."),
+    h("canvas", { ref: canvasRef, onMouseDown: start, onMouseMove: move, onMouseUp: end, onMouseLeave: end, onTouchStart: start, onTouchMove: move, onTouchEnd: end, style: { width: "100%", maxWidth: 420, height: 200, background: "#fff", borderRadius: 12, touchAction: "none", cursor: "crosshair" } }),
+    h("div", { style: { display: "flex", gap: 10, marginTop: 16, flexWrap: "wrap", justifyContent: "center" } },
+      onCancel && h(Btn, { onClick: onCancel, color: "#1e293b" }, "Cancelar"),
+      h(Btn, { onClick: clear, color: "#475569" }, "Limpar"),
+      h(Btn, { onClick: confirm, color: empty ? "#1e293b" : "#00d68f", disabled: empty, style: { color: empty ? "#475569" : "#04150d" } }, "Confirmar assinatura")
+    )
+  );
+}
+
+
+function Admin({ currentUser, employees, records, justifications, messages, onLogout }) {
   const [tab, setTab] = useState("dash");
   const pendingCount = justifications.filter(j => j.status === "pending").length;
   const tabs = [
     { id: "dash", icon: "barchart", label: "Painel" },
     { id: "employees", icon: "users", label: "Equipe" },
     { id: "records", icon: "calendar", label: "Registros" },
+    { id: "messages", icon: "mail", label: "Avisos" },
     { id: "justifications", icon: "filetext", label: "Justific." + (pendingCount ? " (" + pendingCount + ")" : "") }
   ];
   return h("div", { style: { minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" } },
@@ -451,6 +508,7 @@ function Admin({ currentUser, employees, records, justifications, onLogout }) {
       tab === "dash" && h(ADash, { employees, records, justifications }),
       tab === "employees" && h(AEmployees, { employees, currentUser }),
       tab === "records" && h(ARecords, { records, employees }),
+      tab === "messages" && h(AMessages, { employees, messages }),
       tab === "justifications" && h(AJustifications, { justifications })
     ),
     h(BottomNav, { tabs, active: tab, onChange: setTab })
@@ -601,6 +659,124 @@ function ARecords({ records, employees }) {
   );
 }
 
+function AMessages({ employees, messages }) {
+  const colaboradores = employees.filter(e => e.role !== "admin" && e.active);
+  const [target, setTarget] = useState("all");
+  const [type, setType] = useState("message");
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [attachment, setAttachment] = useState(null);
+  const [requireSig, setRequireSig] = useState(true);
+  const [showCam, setShowCam] = useState(false);
+  const [viewer, setViewer] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [sent, setSent] = useState(false);
+  const fileRef = useRef(null);
+
+  const onPickFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (e.target) e.target.value = "";
+    if (!file) return;
+    setErr(""); setBusy(true);
+    try { setAttachment(await downscaleImage(file, 1300, 0.6)); }
+    catch (er) { setErr(er.message || "Não foi possível usar este arquivo."); }
+    setBusy(false);
+  };
+
+  const send = async () => {
+    const txt = body.trim();
+    if (!txt && !attachment) { setErr("Escreva uma mensagem ou anexe um arquivo."); return; }
+    const targets = target === "all" ? colaboradores : colaboradores.filter(e => e.id === target);
+    if (targets.length === 0) { setErr("Selecione um colaborador."); return; }
+    setBusy(true);
+    try {
+      for (const t of targets) {
+        await setItem("messages", genId(), {
+          userId: t.id, userName: t.name,
+          type: type,
+          title: title.trim() || (type === "holerite" ? "Holerite" : "Mensagem"),
+          body: txt, attachment: attachment || null,
+          requireSignature: requireSig,
+          ack: null, createdAt: new Date().toISOString()
+        });
+      }
+      setTitle(""); setBody(""); setAttachment(null); setErr("");
+      setSent(true); setTimeout(() => setSent(false), 2500);
+    } catch (e) { setErr("Erro ao enviar: " + (e.message || "tente novamente")); }
+    setBusy(false);
+  };
+
+  const del = async (id) => { if (!confirm("Excluir este aviso?")) return; await removeItem("messages", id); };
+
+  const ipt = { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none", width: "100%", boxSizing: "border-box" };
+
+  return h("div", { style: { padding: 16 } },
+    showCam && h(SelfieCam, { onCapture: (p) => { setShowCam(false); if (p) setAttachment(p); }, onCancel: () => setShowCam(false), facingMode: "environment", captureWidth: 1300 }),
+    viewer && h(ImageViewer, { src: viewer, onClose: () => setViewer(null) }),
+    h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Avisos e Holerites"),
+    h(Card, { style: { padding: 16, marginBottom: 20 } },
+      h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 } }, "Novo envio"),
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
+        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Enviar para"),
+          h("select", { value: target, onChange: e => setTarget(e.target.value), style: ipt },
+            h("option", { value: "all" }, "Todos os colaboradores"),
+            colaboradores.map(c => h("option", { key: c.id, value: c.id }, c.name))
+          )
+        ),
+        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Tipo"),
+          h("select", { value: type, onChange: e => setType(e.target.value), style: ipt },
+            h("option", { value: "message" }, "Mensagem / Aviso"),
+            h("option", { value: "holerite" }, "Holerite")
+          )
+        ),
+        h("input", { placeholder: type === "holerite" ? "Título (ex: Holerite Junho/2026)" : "Título do aviso", value: title, onChange: e => setTitle(e.target.value), style: ipt }),
+        h("textarea", { placeholder: "Escreva a mensagem...", value: body, onChange: e => setBody(e.target.value), rows: 3, style: { ...ipt, resize: "vertical" } }),
+        h("input", { ref: fileRef, type: "file", accept: "image/*", onChange: onPickFile, style: { display: "none" } }),
+        attachment ? h("div", { style: { display: "flex", alignItems: "center", gap: 12, background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: 10 } },
+          h("img", { src: attachment, onClick: () => setViewer(attachment), style: { width: 54, height: 54, borderRadius: 8, objectFit: "cover", cursor: "pointer", flexShrink: 0 } }),
+          h("div", { style: { flex: 1, color: "#94a3b8", fontSize: 12 } }, "Anexo pronto (toque para ampliar)."),
+          h("button", { onClick: () => setAttachment(null), style: { background: "none", border: "none", cursor: "pointer", color: "#ff3d71" } }, h(Icon, { name: "trash", size: 17 }))
+        ) : h("div", { style: { display: "flex", gap: 8 } },
+          h(Btn, { onClick: () => setShowCam(true), color: "#1e293b", disabled: busy, style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } }, h(Icon, { name: "camera", size: 16 }), "Foto"),
+          h(Btn, { onClick: () => fileRef.current && fileRef.current.click(), color: "#1e293b", disabled: busy, style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } }, h(Icon, { name: "paperclip", size: 15 }), busy ? "..." : "Anexar")
+        ),
+        h("label", { style: { display: "flex", alignItems: "center", gap: 10, color: "#cbd5e1", fontSize: 13, padding: "4px 0", cursor: "pointer" } },
+          h("input", { type: "checkbox", checked: requireSig, onChange: e => setRequireSig(e.target.checked), style: { width: 18, height: 18 } }),
+          "Exigir assinatura de recebimento"
+        ),
+        err && h("div", { style: { color: "#ff3d71", fontSize: 12 } }, err),
+        h(Btn, { onClick: send, disabled: busy, style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } }, h(Icon, { name: "send", size: 15 }), sent ? "✓ Enviado!" : (busy ? "Enviando..." : "Enviar"))
+      )
+    ),
+    h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 } }, "Enviados"),
+    messages.length === 0 ? h(Card, { style: { padding: 24, textAlign: "center" } }, h("div", { style: { color: C.muted, fontSize: 13 } }, "Nenhum aviso enviado")) :
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        messages.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map(m => {
+          const signed = m.ack && m.ack.signed;
+          return h(Card, { key: m.id, style: { padding: 14 } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
+              h("div", { style: { minWidth: 0 } },
+                h("div", { style: { color: "#fff", fontWeight: 700, fontSize: 14 } }, (m.type === "holerite" ? "📄 " : "✉️ ") + (m.title || "")),
+                h("div", { style: { color: C.muted, fontSize: 11, marginTop: 2 } }, "Para: " + m.userName + " • " + fmt.dateTimeBR(m.createdAt))
+              ),
+              h("button", { onClick: () => del(m.id), style: { background: "none", border: "none", cursor: "pointer", color: C.muted, flexShrink: 0 } }, h(Icon, { name: "trash", size: 15 }))
+            ),
+            m.body && h("div", { style: { color: "#cbd5e1", fontSize: 13, marginTop: 8 } }, m.body),
+            m.attachment && h("img", { src: m.attachment, onClick: () => setViewer(m.attachment), style: { width: 64, height: 64, borderRadius: 8, objectFit: "cover", cursor: "pointer", marginTop: 8 } }),
+            m.requireSignature && h("div", { style: { marginTop: 10, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+              signed ? h(React.Fragment, null,
+                h("span", { style: { background: "#00d68f22", color: "#00d68f", fontSize: 10, padding: "3px 8px", borderRadius: 20, fontWeight: 700 } }, "Assinado " + fmt.dateTimeBR(m.ack.signedAt)),
+                m.ack.signature && h("img", { src: m.ack.signature, onClick: () => setViewer(m.ack.signature), style: { height: 36, borderRadius: 6, background: "#fff", padding: 2, cursor: "pointer" } })
+              ) : h("span", { style: { background: "#ffb30022", color: "#ffb300", fontSize: 10, padding: "3px 8px", borderRadius: 20, fontWeight: 700 } }, "Aguardando assinatura")
+            )
+          );
+        })
+      )
+  );
+}
+
+
 function AJustifications({ justifications }) {
   const [viewer, setViewer] = useState(null);
   const respond = async (j, status) => { await updateItem("justifications", j.id, { status, respondedAt: new Date().toISOString() }); };
@@ -635,19 +811,90 @@ function AJustifications({ justifications }) {
 // ═══════════════════════════════════════════════════════════
 // EMPLOYEE
 // ═══════════════════════════════════════════════════════════
-function Employee({ currentUser, records, justifications, onLogout }) {
+function Employee({ currentUser, records, justifications, messages, onLogout }) {
   const [tab, setTab] = useState("punch");
   const myRecords = records.filter(r => r.userId === currentUser.id);
   const myJust = justifications.filter(j => j.userId === currentUser.id);
-  const tabs = [{ id: "punch", icon: "clock", label: "Bater Ponto" }, { id: "history", icon: "calendar", label: "Histórico" }, { id: "just", icon: "filetext", label: "Justificativas" }];
+  const myMessages = messages.filter(m => m.userId === currentUser.id);
+  const pending = myMessages
+    .filter(m => m.requireSignature && !(m.ack && m.ack.signed))
+    .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
+  const unreadCount = pending.length;
+
+  // Bloqueio: enquanto houver mensagem/holerite pendente de assinatura, força assinar
+  if (pending.length > 0) return h(SignBlocker, { message: pending[0], currentUser, onLogout });
+
+  const tabs = [
+    { id: "punch", icon: "clock", label: "Bater Ponto" },
+    { id: "history", icon: "calendar", label: "Histórico" },
+    { id: "messages", icon: "mail", label: "Mensagens" + (unreadCount ? " (" + unreadCount + ")" : "") },
+    { id: "just", icon: "filetext", label: "Justific." }
+  ];
   return h("div", { style: { minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" } },
     h(Header, { title: "Olá, " + currentUser.name.split(" ")[0], sub: "", onLogout }),
     h("div", { style: { flex: 1, overflowY: "auto", paddingBottom: 8 } },
       tab === "punch" && h(EPunch, { currentUser, records: myRecords }),
       tab === "history" && h(EHistory, { records: myRecords }),
+      tab === "messages" && h(EMessages, { currentUser, messages: myMessages }),
       tab === "just" && h(EJustifications, { currentUser, justifications: myJust })
     ),
     h(BottomNav, { tabs, active: tab, onChange: setTab })
+  );
+}
+
+function SignBlocker({ message, currentUser, onLogout }) {
+  const [showPad, setShowPad] = useState(false);
+  const [viewer, setViewer] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const sign = async (sigDataUrl) => {
+    setShowPad(false); setBusy(true); setErr("");
+    try {
+      await updateItem("messages", message.id, { ack: { signed: true, signedAt: new Date().toISOString(), signedBy: currentUser.name, signature: sigDataUrl } });
+    } catch (e) { setErr("Erro ao registrar assinatura. Tente novamente."); setBusy(false); }
+  };
+  return h("div", { style: { minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" } },
+    showPad && h(SignaturePad, { onConfirm: sign, onCancel: () => setShowPad(false) }),
+    viewer && h(ImageViewer, { src: viewer, onClose: () => setViewer(null) }),
+    h(Header, { title: "Confirmação de recebimento", sub: "", onLogout }),
+    h("div", { style: { flex: 1, overflowY: "auto", padding: 16 } },
+      h("div", { style: { background: "rgba(255,179,0,0.1)", border: "1px solid rgba(255,179,0,0.3)", borderRadius: 14, padding: 14, marginBottom: 16, display: "flex", alignItems: "center", gap: 8 } },
+        h(Icon, { name: "alert", size: 18, color: "#ffb300" }),
+        h("div", { style: { color: "#ffb300", fontSize: 13, fontWeight: 700 } }, "Você precisa assinar o recebimento para continuar.")
+      ),
+      h(Card, { style: { padding: 18 } },
+        h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 17 } }, (message.type === "holerite" ? "📄 " : "✉️ ") + (message.title || "")),
+        h("div", { style: { color: C.muted, fontSize: 12, marginTop: 4 } }, fmt.dateTimeBR(message.createdAt)),
+        message.body && h("div", { style: { color: "#cbd5e1", fontSize: 14, marginTop: 12, whiteSpace: "pre-wrap" } }, message.body),
+        message.attachment && h("img", { src: message.attachment, onClick: () => setViewer(message.attachment), style: { width: "100%", maxWidth: 320, borderRadius: 10, marginTop: 14, cursor: "pointer" } })
+      ),
+      err && h("div", { style: { color: "#ff3d71", fontSize: 13, marginTop: 12 } }, err),
+      h(Btn, { onClick: () => setShowPad(true), disabled: busy, style: { width: "100%", marginTop: 16, padding: 16, fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 } }, h(Icon, { name: "pen", size: 18 }), busy ? "Registrando..." : "Assinar recebimento")
+    )
+  );
+}
+
+function EMessages({ currentUser, messages }) {
+  const [viewer, setViewer] = useState(null);
+  return h("div", { style: { padding: 16 } },
+    viewer && h(ImageViewer, { src: viewer, onClose: () => setViewer(null) }),
+    h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Mensagens"),
+    messages.length === 0 ? h(Card, { style: { padding: 40, textAlign: "center" } }, h("div", { style: { color: C.muted } }, "Nenhuma mensagem")) :
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        messages.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map(m => {
+          const signed = m.ack && m.ack.signed;
+          return h(Card, { key: m.id, style: { padding: 14 } },
+            h("div", { style: { color: "#fff", fontWeight: 700, fontSize: 14 } }, (m.type === "holerite" ? "📄 " : "✉️ ") + (m.title || "")),
+            h("div", { style: { color: C.muted, fontSize: 11, marginTop: 2 } }, fmt.dateTimeBR(m.createdAt)),
+            m.body && h("div", { style: { color: "#cbd5e1", fontSize: 13, marginTop: 8, whiteSpace: "pre-wrap" } }, m.body),
+            m.attachment && h("img", { src: m.attachment, onClick: () => setViewer(m.attachment), style: { width: 80, height: 80, borderRadius: 8, objectFit: "cover", cursor: "pointer", marginTop: 8 } }),
+            m.requireSignature && h("div", { style: { marginTop: 10 } },
+              signed ? h("span", { style: { background: "#00d68f22", color: "#00d68f", fontSize: 11, padding: "4px 10px", borderRadius: 20, fontWeight: 700 } }, "✓ Recebimento assinado") :
+                h("span", { style: { background: "#ffb30022", color: "#ffb300", fontSize: 11, padding: "4px 10px", borderRadius: 20, fontWeight: 700 } }, "Assinatura pendente")
+            )
+          );
+        })
+      )
   );
 }
 
