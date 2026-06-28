@@ -137,23 +137,60 @@ function getNextPunchType(rec) {
   return null;
 }
 const PUNCH_LABEL = { in: "Entrada", lunchOut: "Saída Almoço", lunchIn: "Volta Almoço", out: "Saída" };
+function msgPrefix(t) { return t === "advertencia" ? "⚠️ " : t === "holerite" ? "📄 " : "✉️ "; }
+function schedFor(user, t) {
+  if (t === "in") return user.scheduleStart || "08:00";
+  if (t === "lunchOut") return user.schedLunchOut || "12:00";
+  if (t === "lunchIn") return user.schedLunchIn || "13:00";
+  if (t === "out") return user.scheduleEnd || "17:00";
+  return "";
+}
+async function issueLateWarning(user, label, schedHM, actualISO, lateMin, tol, dateStr) {
+  const body = "Atraso registrado automaticamente pelo sistema de ponto.\n\n"
+    + "Ocorrência: " + label + "\n"
+    + "Data: " + fmt.dateBR(dateStr) + "\n"
+    + "Horário previsto: " + schedHM + "\n"
+    + "Horário registrado: " + fmt.timeOnly(actualISO) + "\n"
+    + "Atraso: " + lateMin + " min (tolerância de " + tol + " min)\n\n"
+    + "Ao assinar, você confirma estar ciente desta advertência.";
+  await setItem("messages", genId(), {
+    userId: user.id, userName: user.name, type: "advertencia",
+    title: "Advertência de atraso — " + label,
+    body: body, attachment: null, requireSignature: true, auto: true,
+    ack: null, createdAt: new Date().toISOString()
+  });
+}
 
 async function registerPunch(user, type, photo, loc) {
   const dateStr = todayKey();
   const id = user.id + "_" + dateStr;
   const now = new Date().toISOString();
+  const tol = user.toleranceMinutes != null ? user.toleranceMinutes : 15;
   const punchData = { time: now, lat: loc ? loc.lat : null, lng: loc ? loc.lng : null, selfie: photo || null };
   const snap = await getDoc("records", id);
   let data = snap.exists ? snap.data() : { userId: user.id, userName: user.name, date: dateStr };
   data[type] = punchData;
-  if (type === "in") {
-    const sched = parseHM(user.scheduleStart);
+
+  // Atraso conta na ENTRADA e no RETORNO DO ALMOÇO
+  if (type === "in" || type === "lunchIn") {
+    const sched = parseHM(schedFor(user, type));
     const actual = minutesOfDay(now);
     const lateMinutes = Math.max(0, actual - sched);
-    data.lateMinutes = lateMinutes;
-    data.warning = lateMinutes > (user.toleranceMinutes != null ? user.toleranceMinutes : 15);
-    data.warningAck = false;
+    const isLate = lateMinutes > tol;
+    if (type === "in") {
+      data.lateMinutes = lateMinutes;
+      data.warning = isLate;
+      data.warningAck = false;
+    } else {
+      data.lunchLateMinutes = lateMinutes;
+      data.lunchWarning = isLate;
+    }
+    if (isLate) {
+      const label = type === "in" ? "Entrada" : "Retorno do almoço";
+      try { await issueLateWarning(user, label, schedFor(user, type), now, lateMinutes, tol, dateStr); } catch (e) {}
+    }
   }
+
   if (type === "out" && data.in && data.lunchOut && data.lunchIn) {
     const worked = minutesBetween(data.in.time, data.lunchOut.time) + minutesBetween(data.lunchIn.time, data.out.time);
     const expected = (parseHM(user.scheduleEnd) - parseHM(user.scheduleStart)) - (user.lunchMinutes != null ? user.lunchMinutes : 60);
@@ -554,16 +591,17 @@ function AEmployees({ employees, currentUser }) {
   const OWNER_LOGINS = ["admin", "123456"];
   const isOwner = !!(currentUser && OWNER_LOGINS.indexOf(currentUser.username) !== -1);
   const [modal, setModal] = useState(null);
-  const blank = { name: "", username: "", password: "", role: "employee", posto: "", scheduleStart: "08:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15 };
+  const blank = { name: "", username: "", password: "", role: "employee", posto: "", scheduleStart: "08:00", schedLunchOut: "12:00", schedLunchIn: "13:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15 };
   const [form, setForm] = useState(blank);
   const [err, setErr] = useState("");
-  const open = (e) => { setForm(e ? { name: e.name, username: e.username, password: e.password, role: e.role, posto: e.posto || "", scheduleStart: e.scheduleStart || "08:00", scheduleEnd: e.scheduleEnd || "17:00", lunchMinutes: e.lunchMinutes != null ? e.lunchMinutes : 60, toleranceMinutes: e.toleranceMinutes != null ? e.toleranceMinutes : 15 } : blank); setModal(e || "new"); setErr(""); };
+  const open = (e) => { setForm(e ? { name: e.name, username: e.username, password: e.password, role: e.role, posto: e.posto || "", scheduleStart: e.scheduleStart || "08:00", schedLunchOut: e.schedLunchOut || "12:00", schedLunchIn: e.schedLunchIn || "13:00", scheduleEnd: e.scheduleEnd || "17:00", lunchMinutes: e.lunchMinutes != null ? e.lunchMinutes : 60, toleranceMinutes: e.toleranceMinutes != null ? e.toleranceMinutes : 15 } : blank); setModal(e || "new"); setErr(""); };
   const save = async () => {
     if (!form.name.trim() || !form.username.trim() || !form.password.trim()) { setErr("Preencha nome, usuário e senha"); return; }
     if (!isOwner && form.role === "admin") { setErr("Apenas o administrador-dono pode cadastrar outros administradores."); return; }
     const uname = form.username.trim().toLowerCase();
     if (employees.find(e => e.username === uname && (modal === "new" || e.id !== modal.id))) { setErr("Usuário já existe"); return; }
-    const data = { ...form, username: uname, lunchMinutes: Number(form.lunchMinutes) || 0, toleranceMinutes: Number(form.toleranceMinutes) || 0 };
+    const lunchDerived = parseHM(form.schedLunchIn) - parseHM(form.schedLunchOut);
+    const data = { ...form, username: uname, lunchMinutes: lunchDerived > 0 ? lunchDerived : (Number(form.lunchMinutes) || 60), toleranceMinutes: Number(form.toleranceMinutes) || 0 };
     if (modal === "new") await setItem("employees", genId(), { ...data, active: true, createdAt: new Date().toISOString() });
     else await updateItem("employees", modal.id, data);
     setModal(null);
@@ -599,13 +637,14 @@ function AEmployees({ employees, currentUser }) {
         )
       ),
       h("input", { placeholder: "Posto / Local de trabalho", value: form.posto, onChange: e => setForm(p => ({ ...p, posto: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none", marginBottom: 12, boxSizing: "border-box" } }),
-      h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 } }, "Jornada de trabalho"),
+      h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 } }, "Horários (definidos pelo administrador)"),
       h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 } },
         h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Entrada"), h("input", { type: "time", value: form.scheduleStart, onChange: e => setForm(p => ({ ...p, scheduleStart: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } })),
-        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Saída"), h("input", { type: "time", value: form.scheduleEnd, onChange: e => setForm(p => ({ ...p, scheduleEnd: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } })),
-        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Almoço (min)"), h("input", { type: "number", value: form.lunchMinutes, onChange: e => setForm(p => ({ ...p, lunchMinutes: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } })),
-        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Tolerância atraso (min)"), h("input", { type: "number", value: form.toleranceMinutes, onChange: e => setForm(p => ({ ...p, toleranceMinutes: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } }))
+        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Saída p/ almoço"), h("input", { type: "time", value: form.schedLunchOut, onChange: e => setForm(p => ({ ...p, schedLunchOut: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } })),
+        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Retorno almoço"), h("input", { type: "time", value: form.schedLunchIn, onChange: e => setForm(p => ({ ...p, schedLunchIn: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } })),
+        h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Saída"), h("input", { type: "time", value: form.scheduleEnd, onChange: e => setForm(p => ({ ...p, scheduleEnd: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } }))
       ),
+      h("div", { style: { marginBottom: 12 } }, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Tolerância de atraso (min)"), h("input", { type: "number", value: form.toleranceMinutes, onChange: e => setForm(p => ({ ...p, toleranceMinutes: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none", boxSizing: "border-box" } })),
       err && h("div", { style: { color: "#ff3d71", fontSize: 12, marginBottom: 10 } }, err),
       h("div", { style: { display: "flex", gap: 10 } }, h(Btn, { onClick: () => setModal(null), color: "#1e293b", style: { flex: 1 } }, "Cancelar"), h(Btn, { onClick: save, style: { flex: 1 } }, "Salvar"))
     )
@@ -757,7 +796,7 @@ function AMessages({ employees, messages }) {
           return h(Card, { key: m.id, style: { padding: 14 } },
             h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
               h("div", { style: { minWidth: 0 } },
-                h("div", { style: { color: "#fff", fontWeight: 700, fontSize: 14 } }, (m.type === "holerite" ? "📄 " : "✉️ ") + (m.title || "")),
+                h("div", { style: { color: "#fff", fontWeight: 700, fontSize: 14 } }, msgPrefix(m.type) + (m.title || "")),
                 h("div", { style: { color: C.muted, fontSize: 11, marginTop: 2 } }, "Para: " + m.userName + " • " + fmt.dateTimeBR(m.createdAt))
               ),
               h("button", { onClick: () => del(m.id), style: { background: "none", border: "none", cursor: "pointer", color: C.muted, flexShrink: 0 } }, h(Icon, { name: "trash", size: 15 }))
@@ -863,7 +902,7 @@ function SignBlocker({ message, currentUser, onLogout }) {
         h("div", { style: { color: "#ffb300", fontSize: 13, fontWeight: 700 } }, "Você precisa assinar o recebimento para continuar.")
       ),
       h(Card, { style: { padding: 18 } },
-        h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 17 } }, (message.type === "holerite" ? "📄 " : "✉️ ") + (message.title || "")),
+        h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 17 } }, msgPrefix(message.type) + (message.title || "")),
         h("div", { style: { color: C.muted, fontSize: 12, marginTop: 4 } }, fmt.dateTimeBR(message.createdAt)),
         message.body && h("div", { style: { color: "#cbd5e1", fontSize: 14, marginTop: 12, whiteSpace: "pre-wrap" } }, message.body),
         message.attachment && h("img", { src: message.attachment, onClick: () => setViewer(message.attachment), style: { width: "100%", maxWidth: 320, borderRadius: 10, marginTop: 14, cursor: "pointer" } })
@@ -884,7 +923,7 @@ function EMessages({ currentUser, messages }) {
         messages.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map(m => {
           const signed = m.ack && m.ack.signed;
           return h(Card, { key: m.id, style: { padding: 14 } },
-            h("div", { style: { color: "#fff", fontWeight: 700, fontSize: 14 } }, (m.type === "holerite" ? "📄 " : "✉️ ") + (m.title || "")),
+            h("div", { style: { color: "#fff", fontWeight: 700, fontSize: 14 } }, msgPrefix(m.type) + (m.title || "")),
             h("div", { style: { color: C.muted, fontSize: 11, marginTop: 2 } }, fmt.dateTimeBR(m.createdAt)),
             m.body && h("div", { style: { color: "#cbd5e1", fontSize: 13, marginTop: 8, whiteSpace: "pre-wrap" } }, m.body),
             m.attachment && h("img", { src: m.attachment, onClick: () => setViewer(m.attachment), style: { width: 80, height: 80, borderRadius: 8, objectFit: "cover", cursor: "pointer", marginTop: 8 } }),
@@ -927,7 +966,8 @@ function EPunch({ currentUser, records }) {
     h(Card, { style: { padding: 20, textAlign: "center", marginBottom: 16 } },
       h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 2, textTransform: "uppercase", marginBottom: 8 } }, fmt.dateBR(today)),
       nextType ? h(React.Fragment, null,
-        h("div", { style: { color: "#fff", fontSize: 15, marginBottom: 16 } }, "Próximo registro: ", h("b", null, PUNCH_LABEL[nextType])),
+        h("div", { style: { color: "#fff", fontSize: 15, marginBottom: 4 } }, "Próximo registro: ", h("b", null, PUNCH_LABEL[nextType])),
+        h("div", { style: { color: C.muted, fontSize: 12, marginBottom: 16 } }, "Horário previsto: " + schedFor(currentUser, nextType)),
         h(Btn, { onClick: () => setShowCam(true), disabled: busy, style: { padding: "16px 32px", fontSize: 16, width: "100%" } }, busy ? "Registrando..." : "📸 Bater Ponto")
       ) : h("div", { style: { color: "#00d68f", fontWeight: 700, fontSize: 16 } }, "✓ Jornada concluída hoje")
     ),
