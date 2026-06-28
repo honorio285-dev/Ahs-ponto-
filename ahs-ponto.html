@@ -31,6 +31,7 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.14.0/firebase-firestore-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
 <script>
 (function () {
@@ -248,6 +249,87 @@ function exportCSV(records, employees) {
   a.href = url; a.download = "relatorio_ponto_" + todayKey() + ".csv";
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+function exportXLSX(records, employees) {
+  if (typeof XLSX === "undefined") { alert("Biblioteca do Excel ainda carregando. Tente novamente em alguns segundos."); return; }
+  employees = employees || [];
+  const empById = {};
+  employees.forEach(e => { empById[e.id] = e; });
+  const groups = {};
+  records.forEach(r => {
+    const key = r.userId || r.userName || "—";
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(r);
+  });
+  const keys = Object.keys(groups).sort((a, b) => {
+    const na = (empById[a] && empById[a].name) || (groups[a][0] && groups[a][0].userName) || "";
+    const nb = (empById[b] && empById[b].name) || (groups[b][0] && groups[b][0].userName) || "";
+    return na.localeCompare(nb);
+  });
+
+  const aoa = [];        // matriz de células
+  const merges = [];     // mesclagens
+  const headerRows = []; // linhas que são cabeçalho de tabela (p/ estilo)
+  const nameRows = [];   // linhas de nome do colaborador
+
+  keys.forEach((key, idx) => {
+    const recs = groups[key].slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    const emp = empById[key];
+    const nome = (emp && emp.name) ? emp.name.trim() : ((recs[0] && recs[0].userName) || "—");
+    const posto = (emp && emp.posto) ? String(emp.posto).trim() : "—";
+
+    nameRows.push(aoa.length);
+    aoa.push(["Colaborador: " + nome, "", "", "", "", ""]);
+    merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: 5 } });
+    aoa.push(["Posto: " + posto, "", "", "", "", ""]);
+    merges.push({ s: { r: aoa.length - 1, c: 0 }, e: { r: aoa.length - 1, c: 5 } });
+
+    headerRows.push(aoa.length);
+    aoa.push(["Dia", "Entrada", "Saída Almoço", "Retorno Almoço", "Saída", "Horas Extras"]);
+    recs.forEach(r => {
+      aoa.push([
+        fmt.dateBR(r.date),
+        r.in ? fmt.timeOnly(r.in.time) : "—",
+        r.lunchOut ? fmt.timeOnly(r.lunchOut.time) : "—",
+        r.lunchIn ? fmt.timeOnly(r.lunchIn.time) : "—",
+        r.out ? fmt.timeOnly(r.out.time) : "—",
+        r.overtimeMinutes ? minutesToHM(r.overtimeMinutes) : "—"
+      ]);
+    });
+    aoa.push(["", "", "", "", "", ""]); // linha em branco entre pessoas
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws["!merges"] = merges;
+  ws["!cols"] = [{ wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 10 }, { wch: 14 }];
+
+  // estilos
+  const headFill = { patternType: "solid", fgColor: { rgb: "1E6FFF" } };
+  const headFont = { bold: true, color: { rgb: "FFFFFF" }, sz: 11 };
+  const nameFont = { bold: true, color: { rgb: "0F172A" }, sz: 12 };
+  const center = { horizontal: "center" };
+  const border1 = { style: "thin", color: { rgb: "CBD5E1" } };
+  const cellBorder = { top: border1, bottom: border1, left: border1, right: border1 };
+
+  const range = XLSX.utils.decode_range(ws["!ref"]);
+  for (let R = range.s.r; R <= range.e.r; R++) {
+    for (let Ci = range.s.c; Ci <= range.e.c; Ci++) {
+      const ref = XLSX.utils.encode_cell({ r: R, c: Ci });
+      if (!ws[ref]) continue;
+      if (headerRows.indexOf(R) !== -1) {
+        ws[ref].s = { fill: headFill, font: headFont, alignment: center, border: cellBorder };
+      } else if (nameRows.indexOf(R) !== -1 || nameRows.indexOf(R - 1) !== -1) {
+        ws[ref].s = { font: nameFont };
+      } else {
+        ws[ref].s = { alignment: center, border: cellBorder };
+      }
+    }
+  }
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Relatório de Ponto");
+  XLSX.writeFile(wb, "relatorio_ponto_" + todayKey() + ".xlsx");
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -688,7 +770,10 @@ function ARecords({ records, employees }) {
   return h("div", { style: { padding: 16 } },
     h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 } },
       h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20 } }, "Registros"),
-      records.length > 0 && h(Btn, { onClick: () => exportCSV(records, employees), color: "#1e293b", style: { padding: "8px 12px", fontSize: 12 } }, "Exportar CSV")
+      records.length > 0 && h("div", { style: { display: "flex", gap: 8 } },
+        h(Btn, { onClick: () => exportCSV(records, employees), color: "#1e293b", style: { padding: "8px 12px", fontSize: 12 } }, "CSV"),
+        h(Btn, { onClick: () => exportXLSX(records, employees), color: "#166534", style: { padding: "8px 12px", fontSize: 12 } }, "Excel")
+      )
     ),
     records.length === 0 ? h(Card, { style: { padding: 40, textAlign: "center" } }, h("div", { style: { color: C.muted } }, "Nenhum registro ainda")) :
       h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
