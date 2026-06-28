@@ -300,6 +300,7 @@ function Icon({ name, size = 18, color = "currentColor", style = {} }) {
     case "pen": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M3 21l3-1 11-11-2-2L4 18Z" }), h("path", { d: "M14 6l2 2" }), h("path", { d: "M3 21h18" }));
     case "send": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M21 3 11 13" }), h("path", { d: "M21 3l-7 18-4-8-8-4Z" }));
     case "paperclip": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M21 11l-8.5 8.5a4 4 0 0 1-6-6L14 5a3 3 0 0 1 4 4l-8 8a1.5 1.5 0 0 1-2-2l7.5-7.5" }));
+    case "chat": return h("svg", { viewBox: "0 0 24 24", style: s, ...c }, h("path", { d: "M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H9l-5 4V6a1 1 0 0 1 1-1Z" }));
     default: return null;
   }
 }
@@ -376,6 +377,7 @@ function App() {
   const [records] = useCollection("records");
   const [justifications] = useCollection("justifications");
   const [messages] = useCollection("messages");
+  const [tickets] = useCollection("tickets");
 
   useEffect(() => {
     if (employeesReady && employees.length === 0) {
@@ -392,8 +394,8 @@ function App() {
   );
 
   if (!user) return h(Login, { employees, onLogin: setUser });
-  if (user.role === "admin") return h(Admin, { currentUser: user, employees, records, justifications, messages, onLogout: () => setUser(null) });
-  return h(Employee, { currentUser: user, records, justifications, messages, onLogout: () => setUser(null) });
+  if (user.role === "admin") return h(Admin, { currentUser: user, employees, records, justifications, messages, tickets, onLogout: () => setUser(null) });
+  return h(Employee, { currentUser: user, records, justifications, messages, tickets, onLogout: () => setUser(null) });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -529,14 +531,15 @@ function SignaturePad({ onConfirm, onCancel }) {
 }
 
 
-function Admin({ currentUser, employees, records, justifications, messages, onLogout }) {
+function Admin({ currentUser, employees, records, justifications, messages, tickets, onLogout }) {
   const [tab, setTab] = useState("dash");
   const pendingCount = justifications.filter(j => j.status === "pending").length;
+  const openTickets = tickets.filter(t => t.status !== "answered").length;
   const tabs = [
     { id: "dash", icon: "barchart", label: "Painel" },
     { id: "employees", icon: "users", label: "Equipe" },
     { id: "records", icon: "calendar", label: "Registros" },
-    { id: "messages", icon: "mail", label: "Avisos" },
+    { id: "messages", icon: "mail", label: "Avisos" + (openTickets ? " (" + openTickets + ")" : "") },
     { id: "justifications", icon: "filetext", label: "Justific." + (pendingCount ? " (" + pendingCount + ")" : "") }
   ];
   return h("div", { style: { minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" } },
@@ -545,7 +548,7 @@ function Admin({ currentUser, employees, records, justifications, messages, onLo
       tab === "dash" && h(ADash, { employees, records, justifications }),
       tab === "employees" && h(AEmployees, { employees, currentUser }),
       tab === "records" && h(ARecords, { records, employees }),
-      tab === "messages" && h(AMessages, { employees, messages }),
+      tab === "messages" && h(AMessages, { employees, messages, tickets }),
       tab === "justifications" && h(AJustifications, { justifications })
     ),
     h(BottomNav, { tabs, active: tab, onChange: setTab })
@@ -698,8 +701,9 @@ function ARecords({ records, employees }) {
   );
 }
 
-function AMessages({ employees, messages }) {
+function AMessages({ employees, messages, tickets }) {
   const colaboradores = employees.filter(e => e.role !== "admin" && e.active);
+  const [view, setView] = useState("send");
   const [target, setTarget] = useState("all");
   const [type, setType] = useState("message");
   const [title, setTitle] = useState("");
@@ -712,6 +716,7 @@ function AMessages({ employees, messages }) {
   const [err, setErr] = useState("");
   const [sent, setSent] = useState(false);
   const fileRef = useRef(null);
+  const openTickets = tickets.filter(t => t.status !== "answered").length;
 
   const onPickFile = async (e) => {
     const file = e.target.files && e.target.files[0];
@@ -753,6 +758,11 @@ function AMessages({ employees, messages }) {
   return h("div", { style: { padding: 16 } },
     showCam && h(SelfieCam, { onCapture: (p) => { setShowCam(false); if (p) setAttachment(p); }, onCancel: () => setShowCam(false), facingMode: "environment", captureWidth: 1300 }),
     viewer && h(ImageViewer, { src: viewer, onClose: () => setViewer(null) }),
+    h("div", { style: { display: "flex", gap: 8, marginBottom: 16, background: C.card, borderRadius: 12, padding: 4 } },
+      h("button", { onClick: () => setView("send"), style: { flex: 1, padding: "10px", borderRadius: 9, border: "none", cursor: "pointer", fontWeight: 700, fontSize: 13, background: view === "send" ? C.blue : "transparent", color: view === "send" ? "#fff" : C.muted } }, "Enviar"),
+      h("button", { onClick: () => setView("inbox"), style: { flex: 1, padding: "10px", borderRadius: 9, border: "none", cursor: "pointer", fontWeight: 700, fontSize: 13, background: view === "inbox" ? C.blue : "transparent", color: view === "inbox" ? "#fff" : C.muted } }, "Solicitações" + (openTickets ? " (" + openTickets + ")" : "")),
+    ),
+    view === "inbox" ? h(ATickets, { tickets, viewer, setViewer }) : h(React.Fragment, null,
     h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Avisos e Holerites"),
     h(Card, { style: { padding: 16, marginBottom: 20 } },
       h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 } }, "Novo envio"),
@@ -812,6 +822,55 @@ function AMessages({ employees, messages }) {
           );
         })
       )
+    )
+  );
+}
+
+
+function ATickets({ tickets, viewer, setViewer }) {
+  const [replyMap, setReplyMap] = useState({});
+  const [busyId, setBusyId] = useState(null);
+  const CAT = { Pagamento: "#ffb300", "Benefício": "#a78bfa", Outro: "#60a5fa" };
+  const reply = async (t) => {
+    const txt = (replyMap[t.id] || "").trim();
+    if (!txt) return;
+    setBusyId(t.id);
+    try { await updateItem("tickets", t.id, { reply: txt, status: "answered", repliedAt: new Date().toISOString() }); setReplyMap(m => ({ ...m, [t.id]: "" })); }
+    catch (e) {}
+    setBusyId(null);
+  };
+  const del = async (id) => { if (!confirm("Excluir esta solicitação?")) return; await removeItem("tickets", id); };
+  const sorted = tickets.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  return h("div", null,
+    h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Solicitações dos colaboradores"),
+    sorted.length === 0 ? h(Card, { style: { padding: 40, textAlign: "center" } }, h("div", { style: { color: C.muted } }, "Nenhuma solicitação recebida")) :
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        sorted.map(t => {
+          const answered = t.status === "answered";
+          return h(Card, { key: t.id, style: { padding: 14 } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
+              h("div", { style: { minWidth: 0 } },
+                h("div", { style: { color: "#fff", fontWeight: 700, fontSize: 14 } }, t.userName),
+                h("div", { style: { color: C.muted, fontSize: 11, marginTop: 2 } }, fmt.dateTimeBR(t.createdAt))
+              ),
+              h("span", { style: { background: (CAT[t.category] || "#60a5fa") + "22", color: CAT[t.category] || "#60a5fa", fontSize: 10, padding: "3px 8px", borderRadius: 20, fontWeight: 700, flexShrink: 0 } }, t.category || "Outro")
+            ),
+            h("div", { style: { color: "#cbd5e1", fontSize: 13, marginTop: 8, whiteSpace: "pre-wrap" } }, t.body),
+            t.attachment && h("img", { src: t.attachment, onClick: () => setViewer(t.attachment), style: { width: 64, height: 64, borderRadius: 8, objectFit: "cover", cursor: "pointer", marginTop: 8 } }),
+            answered ? h("div", { style: { marginTop: 10, background: "rgba(0,214,143,0.08)", border: "1px solid rgba(0,214,143,0.25)", borderRadius: 10, padding: 10 } },
+              h("div", { style: { color: "#00d68f", fontSize: 10, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 } }, "Sua resposta • " + fmt.dateTimeBR(t.repliedAt)),
+              h("div", { style: { color: "#cbd5e1", fontSize: 13, whiteSpace: "pre-wrap" } }, t.reply),
+              h("button", { onClick: () => del(t.id), style: { marginTop: 8, background: "none", border: "none", cursor: "pointer", color: C.muted, fontSize: 12 } }, "Excluir")
+            ) : h("div", { style: { marginTop: 10, display: "flex", flexDirection: "column", gap: 8 } },
+              h("textarea", { value: replyMap[t.id] || "", onChange: e => { const v = e.target.value; setReplyMap(m => ({ ...m, [t.id]: v })); }, placeholder: "Escreva uma resposta...", rows: 2, style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none", resize: "vertical" } }),
+              h("div", { style: { display: "flex", gap: 8 } },
+                h(Btn, { onClick: () => del(t.id), color: "#1e293b", style: { padding: "8px 12px", fontSize: 12 } }, "Excluir"),
+                h(Btn, { onClick: () => reply(t), disabled: busyId === t.id, style: { flex: 1, padding: "8px", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } }, h(Icon, { name: "send", size: 14 }), busyId === t.id ? "Enviando..." : "Responder")
+              )
+            )
+          );
+        })
+      )
   );
 }
 
@@ -850,11 +909,12 @@ function AJustifications({ justifications }) {
 // ═══════════════════════════════════════════════════════════
 // EMPLOYEE
 // ═══════════════════════════════════════════════════════════
-function Employee({ currentUser, records, justifications, messages, onLogout }) {
+function Employee({ currentUser, records, justifications, messages, tickets, onLogout }) {
   const [tab, setTab] = useState("punch");
   const myRecords = records.filter(r => r.userId === currentUser.id);
   const myJust = justifications.filter(j => j.userId === currentUser.id);
   const myMessages = messages.filter(m => m.userId === currentUser.id);
+  const myTickets = tickets.filter(t => t.userId === currentUser.id);
   const pending = myMessages
     .filter(m => m.requireSignature && !(m.ack && m.ack.signed))
     .sort((a, b) => (a.createdAt || "").localeCompare(b.createdAt || ""));
@@ -874,7 +934,7 @@ function Employee({ currentUser, records, justifications, messages, onLogout }) 
     h("div", { style: { flex: 1, overflowY: "auto", paddingBottom: 8 } },
       tab === "punch" && h(EPunch, { currentUser, records: myRecords }),
       tab === "history" && h(EHistory, { records: myRecords }),
-      tab === "messages" && h(EMessages, { currentUser, messages: myMessages }),
+      tab === "messages" && h(EMessages, { currentUser, messages: myMessages, tickets: myTickets }),
       tab === "just" && h(EJustifications, { currentUser, justifications: myJust })
     ),
     h(BottomNav, { tabs, active: tab, onChange: setTab })
@@ -913,12 +973,87 @@ function SignBlocker({ message, currentUser, onLogout }) {
   );
 }
 
-function EMessages({ currentUser, messages }) {
+function EMessages({ currentUser, messages, tickets }) {
   const [viewer, setViewer] = useState(null);
+  const [category, setCategory] = useState("Pagamento");
+  const [body, setBody] = useState("");
+  const [attachment, setAttachment] = useState(null);
+  const [showCam, setShowCam] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [sent, setSent] = useState(false);
+  const fileRef = useRef(null);
+  const CAT = { Pagamento: "#ffb300", "Benefício": "#a78bfa", Outro: "#60a5fa" };
+
+  const onPickFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (e.target) e.target.value = "";
+    if (!file) return;
+    setErr(""); setBusy(true);
+    try { setAttachment(await downscaleImage(file, 1200, 0.55)); }
+    catch (er) { setErr(er.message || "Não foi possível usar este arquivo."); }
+    setBusy(false);
+  };
+  const send = async () => {
+    if (!body.trim()) { setErr("Escreva sua mensagem."); return; }
+    setBusy(true);
+    try {
+      await setItem("tickets", genId(), { userId: currentUser.id, userName: currentUser.name, category, body: body.trim(), attachment: attachment || null, status: "open", reply: null, repliedAt: null, createdAt: new Date().toISOString() });
+      setBody(""); setAttachment(null); setErr("");
+      setSent(true); setTimeout(() => setSent(false), 2500);
+    } catch (e) { setErr("Erro ao enviar: " + (e.message || "tente novamente")); }
+    setBusy(false);
+  };
+  const ipt = { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none", width: "100%", boxSizing: "border-box" };
+
   return h("div", { style: { padding: 16 } },
+    showCam && h(SelfieCam, { onCapture: (p) => { setShowCam(false); if (p) setAttachment(p); }, onCancel: () => setShowCam(false), facingMode: "environment", captureWidth: 1200 }),
     viewer && h(ImageViewer, { src: viewer, onClose: () => setViewer(null) }),
-    h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Mensagens"),
-    messages.length === 0 ? h(Card, { style: { padding: 40, textAlign: "center" } }, h("div", { style: { color: C.muted } }, "Nenhuma mensagem")) :
+
+    h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Falar com o administrador"),
+    h(Card, { style: { padding: 16, marginBottom: 20 } },
+      h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 } }, "Nova solicitação"),
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
+        h("select", { value: category, onChange: e => setCategory(e.target.value), style: ipt },
+          h("option", { value: "Pagamento" }, "Pagamento"),
+          h("option", { value: "Benefício" }, "Benefício"),
+          h("option", { value: "Outro" }, "Outro")
+        ),
+        h("textarea", { value: body, onChange: e => setBody(e.target.value), placeholder: "Escreva sua solicitação ou reclamação...", rows: 3, style: { ...ipt, resize: "vertical" } }),
+        h("input", { ref: fileRef, type: "file", accept: "image/*", onChange: onPickFile, style: { display: "none" } }),
+        attachment ? h("div", { style: { display: "flex", alignItems: "center", gap: 12, background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: 10 } },
+          h("img", { src: attachment, onClick: () => setViewer(attachment), style: { width: 50, height: 50, borderRadius: 8, objectFit: "cover", cursor: "pointer", flexShrink: 0 } }),
+          h("div", { style: { flex: 1, color: "#94a3b8", fontSize: 12 } }, "Anexo pronto."),
+          h("button", { onClick: () => setAttachment(null), style: { background: "none", border: "none", cursor: "pointer", color: "#ff3d71" } }, h(Icon, { name: "trash", size: 16 }))
+        ) : h("div", { style: { display: "flex", gap: 8 } },
+          h(Btn, { onClick: () => setShowCam(true), color: "#1e293b", disabled: busy, style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } }, h(Icon, { name: "camera", size: 16 }), "Foto"),
+          h(Btn, { onClick: () => fileRef.current && fileRef.current.click(), color: "#1e293b", disabled: busy, style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } }, h(Icon, { name: "paperclip", size: 15 }), busy ? "..." : "Anexar")
+        ),
+        err && h("div", { style: { color: "#ff3d71", fontSize: 12 } }, err),
+        h(Btn, { onClick: send, disabled: busy, style: { display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } }, h(Icon, { name: "send", size: 15 }), sent ? "✓ Enviado!" : (busy ? "Enviando..." : "Enviar ao administrador"))
+      )
+    ),
+
+    h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 } }, "Minhas solicitações"),
+    tickets.length === 0 ? h(Card, { style: { padding: 20, textAlign: "center", marginBottom: 20 } }, h("div", { style: { color: C.muted, fontSize: 13 } }, "Nenhuma solicitação enviada")) :
+      h("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 20 } },
+        tickets.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map(t => h(Card, { key: t.id, style: { padding: 14 } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 } },
+            h("span", { style: { background: (CAT[t.category] || "#60a5fa") + "22", color: CAT[t.category] || "#60a5fa", fontSize: 10, padding: "3px 8px", borderRadius: 20, fontWeight: 700 } }, t.category || "Outro"),
+            h("span", { style: { color: t.status === "answered" ? "#00d68f" : "#ffb300", fontSize: 11, fontWeight: 700 } }, t.status === "answered" ? "Respondida" : "Aguardando")
+          ),
+          h("div", { style: { color: "#cbd5e1", fontSize: 13, marginTop: 8, whiteSpace: "pre-wrap" } }, t.body),
+          t.attachment && h("img", { src: t.attachment, onClick: () => setViewer(t.attachment), style: { width: 64, height: 64, borderRadius: 8, objectFit: "cover", cursor: "pointer", marginTop: 8 } }),
+          h("div", { style: { color: C.muted, fontSize: 10, marginTop: 6 } }, fmt.dateTimeBR(t.createdAt)),
+          t.reply && h("div", { style: { marginTop: 10, background: "rgba(30,111,255,0.08)", border: "1px solid rgba(30,111,255,0.25)", borderRadius: 10, padding: 10 } },
+            h("div", { style: { color: "#60a5fa", fontSize: 10, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 } }, "Resposta do administrador"),
+            h("div", { style: { color: "#cbd5e1", fontSize: 13, whiteSpace: "pre-wrap" } }, t.reply)
+          )
+        ))
+      ),
+
+    h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 } }, "Recebidas do administrador"),
+    messages.length === 0 ? h(Card, { style: { padding: 24, textAlign: "center" } }, h("div", { style: { color: C.muted, fontSize: 13 } }, "Nenhuma mensagem")) :
       h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
         messages.slice().sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")).map(m => {
           const signed = m.ack && m.ack.signed;
