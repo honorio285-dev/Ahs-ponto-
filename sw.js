@@ -1,8 +1,8 @@
 // Service Worker - A.H.S Ponto
 // Estratégia: network-first (sempre busca a versão mais nova quando online;
 // usa cache apenas como reserva quando estiver sem internet).
-const CACHE = "ahs-ponto-v1";
-const SHELL = ["ahs-ponto.html", "manifest.json", "ícone-192.png", "ícone-512.png"];
+const CACHE = "ahs-ponto-v2";
+const SHELL = ["ahs-ponto.html", "manifest.json"];
 
 self.addEventListener("install", (event) => {
   self.skipWaiting();
