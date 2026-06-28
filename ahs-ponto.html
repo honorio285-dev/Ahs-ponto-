@@ -73,6 +73,29 @@ const getDoc = (name, id) => fdb.collection(name).doc(id).get();
 // UTILITIES
 // ═══════════════════════════════════════════════════════════
 const genId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+function downscaleImage(file, maxDim, quality) {
+  maxDim = maxDim || 1000; quality = quality || 0.55;
+  return new Promise(function (resolve, reject) {
+    if (!file || !/^image\//.test(file.type)) { reject(new Error("Selecione uma imagem (JPG ou PNG).")); return; }
+    var reader = new FileReader();
+    reader.onload = function () {
+      var img = new Image();
+      img.onload = function () {
+        var w = img.width, hh = img.height;
+        if (w >= hh) { if (w > maxDim) { hh = Math.round(hh * maxDim / w); w = maxDim; } }
+        else { if (hh > maxDim) { w = Math.round(w * maxDim / hh); hh = maxDim; } }
+        var canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = hh;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, hh);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = function () { reject(new Error("Imagem inválida.")); };
+      img.src = reader.result;
+    };
+    reader.onerror = function () { reject(new Error("Falha ao ler o arquivo.")); };
+    reader.readAsDataURL(file);
+  });
+}
 function getLocation(timeout) {
   timeout = timeout || 8000;
   return new Promise(function (resolve) {
@@ -222,7 +245,9 @@ const Btn = ({ children, onClick, color = C.blue, style = {}, disabled = false }
 // ═══════════════════════════════════════════════════════════
 // CÂMERA DE SELFIE
 // ═══════════════════════════════════════════════════════════
-function SelfieCam({ onCapture, onCancel }) {
+function SelfieCam({ onCapture, onCancel, facingMode, captureWidth }) {
+  facingMode = facingMode || "user";
+  captureWidth = captureWidth || 240;
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const canvasRef = useRef(null);
@@ -234,7 +259,7 @@ function SelfieCam({ onCapture, onCancel }) {
     let cancelled = false;
     (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 480 } } });
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facingMode, width: { ideal: facingMode === "user" ? 480 : 1280 } } });
         if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
         streamRef.current = stream;
         if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
@@ -246,7 +271,7 @@ function SelfieCam({ onCapture, onCancel }) {
 
   const capture = () => {
     const v = videoRef.current; if (!v || !v.videoWidth) return;
-    const w = 240, hh = Math.round(w * (v.videoHeight / v.videoWidth));
+    const w = captureWidth, hh = Math.round(w * (v.videoHeight / v.videoWidth));
     const canvas = canvasRef.current;
     canvas.width = w; canvas.height = hh;
     canvas.getContext("2d").drawImage(v, 0, 0, w, hh);
@@ -370,6 +395,16 @@ function BottomModal({ title, children, onClose }) {
   );
 }
 
+function ImageViewer({ src, onClose }) {
+  return h("div", { onClick: onClose, style: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 300, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 16 } },
+    h("img", { src: src, style: { maxWidth: "100%", maxHeight: "82vh", borderRadius: 10, objectFit: "contain" } }),
+    h("div", { style: { display: "flex", gap: 10, marginTop: 16 } },
+      h("a", { href: src, download: "anexo.jpg", onClick: e => e.stopPropagation(), style: { background: "#1e293b", color: "#fff", textDecoration: "none", borderRadius: 10, padding: "10px 18px", fontWeight: 700, fontSize: 13 } }, "Baixar"),
+      h(Btn, { onClick: onClose, color: "#1e6fff" }, "Fechar")
+    )
+  );
+}
+
 // ═══════════════════════════════════════════════════════════
 // ADMIN
 // ═══════════════════════════════════════════════════════════
@@ -386,7 +421,7 @@ function Admin({ currentUser, employees, records, justifications, onLogout }) {
     h(Header, { title: "Painel Administrativo", sub: currentUser.name, onLogout }),
     h("div", { style: { flex: 1, overflowY: "auto", paddingBottom: 8 } },
       tab === "dash" && h(ADash, { employees, records, justifications }),
-      tab === "employees" && h(AEmployees, { employees }),
+      tab === "employees" && h(AEmployees, { employees, currentUser }),
       tab === "records" && h(ARecords, { records }),
       tab === "justifications" && h(AJustifications, { justifications })
     ),
@@ -429,7 +464,8 @@ function ADash({ employees, records, justifications }) {
   );
 }
 
-function AEmployees({ employees }) {
+function AEmployees({ employees, currentUser }) {
+  const isOwner = !!(currentUser && currentUser.username === "123456");
   const [modal, setModal] = useState(null);
   const blank = { name: "", username: "", password: "", role: "employee", scheduleStart: "08:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15 };
   const [form, setForm] = useState(blank);
@@ -437,6 +473,7 @@ function AEmployees({ employees }) {
   const open = (e) => { setForm(e ? { name: e.name, username: e.username, password: e.password, role: e.role, scheduleStart: e.scheduleStart || "08:00", scheduleEnd: e.scheduleEnd || "17:00", lunchMinutes: e.lunchMinutes != null ? e.lunchMinutes : 60, toleranceMinutes: e.toleranceMinutes != null ? e.toleranceMinutes : 15 } : blank); setModal(e || "new"); setErr(""); };
   const save = async () => {
     if (!form.name.trim() || !form.username.trim() || !form.password.trim()) { setErr("Preencha nome, usuário e senha"); return; }
+    if (!isOwner && form.role === "admin") { setErr("Apenas o administrador-dono pode cadastrar outros administradores."); return; }
     const uname = form.username.trim().toLowerCase();
     if (employees.find(e => e.username === uname && (modal === "new" || e.id !== modal.id))) { setErr("Usuário já existe"); return; }
     const data = { ...form, username: uname, lunchMinutes: Number(form.lunchMinutes) || 0, toleranceMinutes: Number(form.toleranceMinutes) || 0 };
@@ -460,8 +497,8 @@ function AEmployees({ employees }) {
         ),
         h("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
           h("button", { onClick: () => toggle(e), style: { width: 10, height: 10, borderRadius: "50%", background: e.active ? "#00d68f" : "#475569", border: "none", cursor: "pointer", flexShrink: 0 } }),
-          h("button", { onClick: () => open(e), style: { background: "none", border: "none", cursor: "pointer", color: C.muted } }, h(Icon, { name: "edit", size: 15 })),
-          e.id !== "admin-seed" && h("button", { onClick: () => del(e.id), style: { background: "none", border: "none", cursor: "pointer", color: C.muted } }, h(Icon, { name: "trash", size: 15 }))
+          (isOwner || e.role !== "admin") && h("button", { onClick: () => open(e), style: { background: "none", border: "none", cursor: "pointer", color: C.muted } }, h(Icon, { name: "edit", size: 15 })),
+          (isOwner || e.role !== "admin") && e.id !== "admin-seed" && h("button", { onClick: () => del(e.id), style: { background: "none", border: "none", cursor: "pointer", color: C.muted } }, h(Icon, { name: "trash", size: 15 }))
         )
       ))
     ),
@@ -470,7 +507,7 @@ function AEmployees({ employees }) {
         h("input", { placeholder: "Nome completo", value: form.name, onChange: e => setForm(p => ({ ...p, name: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none" } }),
         h("input", { placeholder: "Usuário (login)", value: form.username, autoCapitalize: "none", autoCorrect: "off", onChange: e => setForm(p => ({ ...p, username: e.target.value.toLowerCase() })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none" } }),
         h("input", { type: "password", placeholder: "Senha", value: form.password, onChange: e => setForm(p => ({ ...p, password: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none" } }),
-        h("select", { value: form.role, onChange: e => setForm(p => ({ ...p, role: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none" } },
+        isOwner && h("select", { value: form.role, onChange: e => setForm(p => ({ ...p, role: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none" } },
           h("option", { value: "employee" }, "Colaborador"), h("option", { value: "admin" }, "Administrador")
         )
       ),
@@ -535,9 +572,11 @@ function ARecords({ records }) {
 }
 
 function AJustifications({ justifications }) {
+  const [viewer, setViewer] = useState(null);
   const respond = async (j, status) => { await updateItem("justifications", j.id, { status, respondedAt: new Date().toISOString() }); };
   const STJ = { pending: { l: "Pendente", c: "#ffb300" }, approved: { l: "Aprovada", c: "#00d68f" }, rejected: { l: "Rejeitada", c: "#ff3d71" } };
   return h("div", { style: { padding: 16 } },
+    viewer && h(ImageViewer, { src: viewer, onClose: () => setViewer(null) }),
     h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Justificativas"),
     justifications.length === 0 ? h(Card, { style: { padding: 40, textAlign: "center" } }, h("div", { style: { color: C.muted } }, "Nenhuma justificativa")) :
       h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
@@ -550,6 +589,10 @@ function AJustifications({ justifications }) {
             h("span", { style: { background: (STJ[j.status] || STJ.pending).c + "22", color: (STJ[j.status] || STJ.pending).c, fontSize: 10, padding: "3px 8px", borderRadius: 20, fontWeight: 700 } }, (STJ[j.status] || STJ.pending).l)
           ),
           h("div", { style: { color: "#cbd5e1", fontSize: 13, marginTop: 8 } }, j.reason),
+          j.attachment && h("div", { style: { marginTop: 10 } },
+            h("div", { style: { color: C.muted, fontSize: 10, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 } }, "Anexo"),
+            h("img", { src: j.attachment, onClick: () => setViewer(j.attachment), style: { width: 90, height: 90, borderRadius: 8, objectFit: "cover", cursor: "pointer", border: "1px solid " + C.border } })
+          ),
           j.status === "pending" && h("div", { style: { display: "flex", gap: 8, marginTop: 10 } },
             h(Btn, { onClick: () => respond(j, "rejected"), color: "#7f1d1d", style: { flex: 1, padding: "8px", fontSize: 12 } }, "Rejeitar"),
             h(Btn, { onClick: () => respond(j, "approved"), color: "#166534", style: { flex: 1, padding: "8px", fontSize: 12 } }, "Aprovar")
@@ -644,25 +687,63 @@ function EHistory({ records }) {
 
 function EJustifications({ currentUser, justifications }) {
   const [form, setForm] = useState({ date: todayKey(), type: "Atraso", reason: "" });
+  const [attachment, setAttachment] = useState(null);
+  const [showCam, setShowCam] = useState(false);
+  const [viewer, setViewer] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [fileErr, setFileErr] = useState("");
   const [sent, setSent] = useState(false);
+  const fileRef = useRef(null);
   const STJ = { pending: { l: "Pendente", c: "#ffb300" }, approved: { l: "Aprovada", c: "#00d68f" }, rejected: { l: "Rejeitada", c: "#ff3d71" } };
+
+  const onPickFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (e.target) e.target.value = "";
+    if (!file) return;
+    setFileErr(""); setBusy(true);
+    try { const data = await downscaleImage(file, 1100, 0.55); setAttachment(data); }
+    catch (err) { setFileErr(err.message || "Não foi possível usar este arquivo."); }
+    setBusy(false);
+  };
+  const onCamCapture = (photo) => { setShowCam(false); if (photo) setAttachment(photo); };
+
   const send = async () => {
     if (!form.reason.trim()) return;
-    await setItem("justifications", genId(), { userId: currentUser.id, userName: currentUser.name, date: form.date, type: form.type, reason: form.reason.trim(), status: "pending", createdAt: new Date().toISOString() });
-    setForm({ date: todayKey(), type: "Atraso", reason: "" });
-    setSent(true); setTimeout(() => setSent(false), 2500);
+    setBusy(true);
+    try {
+      await setItem("justifications", genId(), { userId: currentUser.id, userName: currentUser.name, date: form.date, type: form.type, reason: form.reason.trim(), attachment: attachment || null, status: "pending", createdAt: new Date().toISOString() });
+      setForm({ date: todayKey(), type: "Atraso", reason: "" });
+      setAttachment(null); setFileErr("");
+      setSent(true); setTimeout(() => setSent(false), 2500);
+    } catch (e) { setFileErr("Erro ao enviar: " + (e.message || "tente novamente")); }
+    setBusy(false);
   };
+
   return h("div", { style: { padding: 16 } },
+    showCam && h(SelfieCam, { onCapture: onCamCapture, onCancel: () => setShowCam(false), facingMode: "environment", captureWidth: 1100 }),
+    viewer && h(ImageViewer, { src: viewer, onClose: () => setViewer(null) }),
     h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20, marginBottom: 16 } }, "Justificativas"),
     h(Card, { style: { padding: 16, marginBottom: 20 } },
       h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 } }, "Nova justificativa"),
       h("div", { style: { display: "flex", flexDirection: "column", gap: 10 } },
         h("input", { type: "date", value: form.date, onChange: e => setForm(p => ({ ...p, date: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } }),
         h("select", { value: form.type, onChange: e => setForm(p => ({ ...p, type: e.target.value })), style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } },
-          h("option", { value: "Atraso" }, "Atraso"), h("option", { value: "Falta" }, "Falta"), h("option", { value: "Outro" }, "Outro")
+          h("option", { value: "Atraso" }, "Atraso"), h("option", { value: "Falta" }, "Falta"), h("option", { value: "Atestado/Declaração" }, "Atestado/Declaração"), h("option", { value: "Outro" }, "Outro")
         ),
         h("textarea", { value: form.reason, onChange: e => setForm(p => ({ ...p, reason: e.target.value })), placeholder: "Explique o motivo...", rows: 3, style: { background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none", resize: "vertical" } }),
-        h(Btn, { onClick: send, disabled: !form.reason.trim() }, sent ? "✓ Enviado!" : "Enviar Justificativa")
+        h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase" } }, "Anexar atestado / declaração"),
+        h("input", { ref: fileRef, type: "file", accept: "image/*", onChange: onPickFile, style: { display: "none" } }),
+        !attachment && h("div", { style: { display: "flex", gap: 8 } },
+          h(Btn, { onClick: () => setShowCam(true), color: "#1e293b", disabled: busy, style: { flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 } }, h(Icon, { name: "camera", size: 16 }), "Tirar foto"),
+          h(Btn, { onClick: () => fileRef.current && fileRef.current.click(), color: "#1e293b", disabled: busy, style: { flex: 1 } }, busy ? "Processando..." : "📎 Anexar arquivo")
+        ),
+        attachment && h("div", { style: { display: "flex", alignItems: "center", gap: 12, background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: 10 } },
+          h("img", { src: attachment, onClick: () => setViewer(attachment), style: { width: 54, height: 54, borderRadius: 8, objectFit: "cover", cursor: "pointer", flexShrink: 0 } }),
+          h("div", { style: { flex: 1, color: "#94a3b8", fontSize: 12 } }, "Anexo pronto. Toque na imagem para ampliar."),
+          h("button", { onClick: () => setAttachment(null), style: { background: "none", border: "none", cursor: "pointer", color: "#ff3d71" } }, h(Icon, { name: "trash", size: 17 }))
+        ),
+        fileErr && h("div", { style: { color: "#ff3d71", fontSize: 12 } }, fileErr),
+        h(Btn, { onClick: send, disabled: !form.reason.trim() || busy }, sent ? "✓ Enviado!" : (busy ? "Aguarde..." : "Enviar Justificativa"))
       )
     ),
     h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 10 } }, "Minhas justificativas"),
@@ -673,7 +754,8 @@ function EJustifications({ currentUser, justifications }) {
             h("div", null, h("div", { style: { color: "#fff", fontWeight: 700, fontSize: 13 } }, fmt.dateBR(j.date) + " • " + j.type)),
             h("span", { style: { background: (STJ[j.status] || STJ.pending).c + "22", color: (STJ[j.status] || STJ.pending).c, fontSize: 10, padding: "3px 8px", borderRadius: 20, fontWeight: 700 } }, (STJ[j.status] || STJ.pending).l)
           ),
-          h("div", { style: { color: "#94a3b8", fontSize: 12, marginTop: 6 } }, j.reason)
+          h("div", { style: { color: "#94a3b8", fontSize: 12, marginTop: 6 } }, j.reason),
+          j.attachment && h("img", { src: j.attachment, onClick: () => setViewer(j.attachment), style: { width: 64, height: 64, borderRadius: 8, objectFit: "cover", cursor: "pointer", marginTop: 8 } })
         ))
       )
   );
