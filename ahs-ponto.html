@@ -165,22 +165,50 @@ async function registerPunch(user, type, photo, loc) {
   return data;
 }
 
-function exportCSV(records) {
-  const rows = [["Colaborador", "Data", "Entrada", "Saída Almoço", "Volta Almoço", "Saída", "Horas Trabalhadas", "Horas Extras", "Atraso (min)", "Advertência"]];
+function exportCSV(records, employees) {
+  employees = employees || [];
+  const empById = {};
+  employees.forEach(e => { empById[e.id] = e; });
+  const esc = (v) => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
+  // agrupar registros por colaborador
+  const groups = {};
   records.forEach(r => {
-    rows.push([
-      r.userName || "", r.date || "",
-      r.in ? fmt.timeOnly(r.in.time) : "", r.lunchOut ? fmt.timeOnly(r.lunchOut.time) : "",
-      r.lunchIn ? fmt.timeOnly(r.lunchIn.time) : "", r.out ? fmt.timeOnly(r.out.time) : "",
-      r.workedMinutes ? minutesToHM(r.workedMinutes) : "", r.overtimeMinutes ? minutesToHM(r.overtimeMinutes) : "",
-      r.lateMinutes || 0, r.warning ? "SIM" : "NÃO"
-    ]);
+    const key = r.userId || r.userName || "—";
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(r);
   });
-  const csv = rows.map(row => row.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(",")).join("\n");
+  const keys = Object.keys(groups).sort((a, b) => {
+    const na = (empById[a] && empById[a].name) || (groups[a][0] && groups[a][0].userName) || "";
+    const nb = (empById[b] && empById[b].name) || (groups[b][0] && groups[b][0].userName) || "";
+    return na.localeCompare(nb);
+  });
+  const lines = [];
+  keys.forEach(key => {
+    const recs = groups[key].slice().sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    const emp = empById[key];
+    const nome = (emp && emp.name) || (recs[0] && recs[0].userName) || "—";
+    const posto = (emp && emp.posto) ? emp.posto : "—";
+    lines.push(esc("Colaborador: " + nome));
+    lines.push(esc("Posto: " + posto));
+    lines.push("");
+    lines.push(["Dia", "Entrada", "Saída Almoço", "Retorno Almoço", "Saída", "Horas Extras"].map(esc).join(","));
+    recs.forEach(r => {
+      lines.push([
+        fmt.dateBR(r.date),
+        r.in ? fmt.timeOnly(r.in.time) : "—",
+        r.lunchOut ? fmt.timeOnly(r.lunchOut.time) : "—",
+        r.lunchIn ? fmt.timeOnly(r.lunchIn.time) : "—",
+        r.out ? fmt.timeOnly(r.out.time) : "—",
+        r.overtimeMinutes ? minutesToHM(r.overtimeMinutes) : "—"
+      ].map(esc).join(","));
+    });
+    lines.push(""); lines.push("");
+  });
+  const csv = lines.join("\n");
   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  a.href = url; a.download = "ponto_" + todayKey() + ".csv";
+  a.href = url; a.download = "relatorio_ponto_" + todayKey() + ".csv";
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -422,7 +450,7 @@ function Admin({ currentUser, employees, records, justifications, onLogout }) {
     h("div", { style: { flex: 1, overflowY: "auto", paddingBottom: 8 } },
       tab === "dash" && h(ADash, { employees, records, justifications }),
       tab === "employees" && h(AEmployees, { employees, currentUser }),
-      tab === "records" && h(ARecords, { records }),
+      tab === "records" && h(ARecords, { records, employees }),
       tab === "justifications" && h(AJustifications, { justifications })
     ),
     h(BottomNav, { tabs, active: tab, onChange: setTab })
@@ -467,10 +495,10 @@ function ADash({ employees, records, justifications }) {
 function AEmployees({ employees, currentUser }) {
   const isOwner = !!(currentUser && currentUser.username === "123456");
   const [modal, setModal] = useState(null);
-  const blank = { name: "", username: "", password: "", role: "employee", scheduleStart: "08:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15 };
+  const blank = { name: "", username: "", password: "", role: "employee", posto: "", scheduleStart: "08:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15 };
   const [form, setForm] = useState(blank);
   const [err, setErr] = useState("");
-  const open = (e) => { setForm(e ? { name: e.name, username: e.username, password: e.password, role: e.role, scheduleStart: e.scheduleStart || "08:00", scheduleEnd: e.scheduleEnd || "17:00", lunchMinutes: e.lunchMinutes != null ? e.lunchMinutes : 60, toleranceMinutes: e.toleranceMinutes != null ? e.toleranceMinutes : 15 } : blank); setModal(e || "new"); setErr(""); };
+  const open = (e) => { setForm(e ? { name: e.name, username: e.username, password: e.password, role: e.role, posto: e.posto || "", scheduleStart: e.scheduleStart || "08:00", scheduleEnd: e.scheduleEnd || "17:00", lunchMinutes: e.lunchMinutes != null ? e.lunchMinutes : 60, toleranceMinutes: e.toleranceMinutes != null ? e.toleranceMinutes : 15 } : blank); setModal(e || "new"); setErr(""); };
   const save = async () => {
     if (!form.name.trim() || !form.username.trim() || !form.password.trim()) { setErr("Preencha nome, usuário e senha"); return; }
     if (!isOwner && form.role === "admin") { setErr("Apenas o administrador-dono pode cadastrar outros administradores."); return; }
@@ -493,7 +521,7 @@ function AEmployees({ employees, currentUser }) {
         h("div", { style: { width: 40, height: 40, borderRadius: "50%", background: e.role === "admin" ? "#4c1d95" : "#1e3a8a", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 900, fontSize: 15, flexShrink: 0 } }, e.name.charAt(0).toUpperCase()),
         h("div", { style: { flex: 1, minWidth: 0 } },
           h("div", { style: { color: "#fff", fontWeight: 600, fontSize: 14 } }, e.name),
-          h("div", { style: { color: C.muted, fontSize: 11 } }, "@" + e.username + " • " + (e.role === "admin" ? "Admin" : (e.scheduleStart || "08:00") + "–" + (e.scheduleEnd || "17:00")))
+          h("div", { style: { color: C.muted, fontSize: 11 } }, "@" + e.username + " • " + (e.role === "admin" ? "Admin" : (e.scheduleStart || "08:00") + "–" + (e.scheduleEnd || "17:00")) + (e.posto ? " • " + e.posto : ""))
         ),
         h("div", { style: { display: "flex", alignItems: "center", gap: 12 } },
           h("button", { onClick: () => toggle(e), style: { width: 10, height: 10, borderRadius: "50%", background: e.active ? "#00d68f" : "#475569", border: "none", cursor: "pointer", flexShrink: 0 } }),
@@ -511,6 +539,7 @@ function AEmployees({ employees, currentUser }) {
           h("option", { value: "employee" }, "Colaborador"), h("option", { value: "admin" }, "Administrador")
         )
       ),
+      h("input", { placeholder: "Posto / Local de trabalho", value: form.posto, onChange: e => setForm(p => ({ ...p, posto: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, outline: "none", marginBottom: 12, boxSizing: "border-box" } }),
       h("div", { style: { color: C.muted, fontSize: 11, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 } }, "Jornada de trabalho"),
       h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 } },
         h("div", null, h("div", { style: { color: C.muted, fontSize: 11, marginBottom: 4 } }, "Entrada"), h("input", { type: "time", value: form.scheduleStart, onChange: e => setForm(p => ({ ...p, scheduleStart: e.target.value })), style: { width: "100%", background: C.bg, border: "1px solid " + C.border, borderRadius: 10, padding: "10px 12px", color: "#fff", fontSize: 14, outline: "none" } })),
@@ -535,7 +564,7 @@ function PunchRow({ label, p }) {
   );
 }
 
-function ARecords({ records }) {
+function ARecords({ records, employees }) {
   const [detail, setDetail] = useState(null);
   if (detail) return h("div", { style: { padding: 16 } },
     h("button", { onClick: () => setDetail(null), style: { display: "flex", alignItems: "center", gap: 8, color: C.muted, background: "none", border: "none", cursor: "pointer", marginBottom: 16, fontSize: 13 } }, h(Icon, { name: "arrowleft", size: 17 }), "Voltar"),
@@ -558,7 +587,7 @@ function ARecords({ records }) {
   return h("div", { style: { padding: 16 } },
     h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 } },
       h("div", { style: { color: "#fff", fontWeight: 800, fontSize: 20 } }, "Registros"),
-      records.length > 0 && h(Btn, { onClick: () => exportCSV(records), color: "#1e293b", style: { padding: "8px 12px", fontSize: 12 } }, "Exportar CSV")
+      records.length > 0 && h(Btn, { onClick: () => exportCSV(records, employees), color: "#1e293b", style: { padding: "8px 12px", fontSize: 12 } }, "Exportar CSV")
     ),
     records.length === 0 ? h(Card, { style: { padding: 40, textAlign: "center" } }, h("div", { style: { color: C.muted } }, "Nenhum registro ainda")) :
       h("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
