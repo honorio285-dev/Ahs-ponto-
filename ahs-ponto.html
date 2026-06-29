@@ -78,6 +78,13 @@ const removeItem = (name, id) => fdb.collection(name).doc(id).delete();
 const getDoc = (name, id) => fdb.collection(name).doc(id).get();
 
 // ═══════════════════════════════════════════════════════════
+// MULTI-ADMIN (ISOLAMENTO POR ADMINISTRADOR)
+// ═══════════════════════════════════════════════════════════
+const OWNER_LOGINS = ["admin", "123456"];
+function isOwnerLogin(user) { return !!(user && OWNER_LOGINS.indexOf(user.username) !== -1); }
+function teamIdOf(person) { return (person && (person.adminId || person.id)) || null; }
+
+// ═══════════════════════════════════════════════════════════
 // UTILITIES
 // ═══════════════════════════════════════════════════════════
 const genId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -470,7 +477,7 @@ function App() {
 
   useEffect(() => {
     if (employeesReady && employees.length === 0) {
-      setItem("employees", "admin-seed", { name: "Administrador", username: "admin", password: "admin123", role: "admin", active: true, scheduleStart: "08:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15, createdAt: new Date().toISOString() }).catch(() => {});
+      setItem("employees", "admin-seed", { name: "Administrador", username: "admin", password: "admin123", role: "admin", adminId: "admin-seed", active: true, scheduleStart: "08:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15, createdAt: new Date().toISOString() }).catch(() => {});
     }
   }, [employeesReady, employees.length]);
 
@@ -622,8 +629,16 @@ function SignaturePad({ onConfirm, onCancel }) {
 
 function Admin({ currentUser, employees, records, justifications, messages, tickets, onLogout }) {
   const [tab, setTab] = useState("dash");
-  const pendingCount = justifications.filter(j => j.status === "pending").length;
-  const openTickets = tickets.filter(t => t.status !== "answered").length;
+  const isMaster = isOwnerLogin(currentUser);
+  const myTeamId = teamIdOf(currentUser);
+  const myEmployees = isMaster ? employees : employees.filter(e => teamIdOf(e) === myTeamId);
+  const myIds = new Set(myEmployees.map(e => e.id));
+  const myRecords = isMaster ? records : records.filter(r => myIds.has(r.userId));
+  const myJustifications = isMaster ? justifications : justifications.filter(j => myIds.has(j.userId));
+  const myMessages = isMaster ? messages : messages.filter(m => myIds.has(m.userId));
+  const myTickets = isMaster ? tickets : tickets.filter(t => myIds.has(t.userId));
+  const pendingCount = myJustifications.filter(j => j.status === "pending").length;
+  const openTickets = myTickets.filter(t => t.status !== "answered").length;
   const tabs = [
     { id: "dash", icon: "barchart", label: "Painel" },
     { id: "employees", icon: "users", label: "Equipe" },
@@ -634,11 +649,11 @@ function Admin({ currentUser, employees, records, justifications, messages, tick
   return h("div", { style: { minHeight: "100vh", background: C.bg, display: "flex", flexDirection: "column" } },
     h(Header, { title: "Painel Administrativo", sub: currentUser.name, onLogout }),
     h("div", { style: { flex: 1, overflowY: "auto", paddingBottom: 8 } },
-      tab === "dash" && h(ADash, { employees, records, justifications }),
-      tab === "employees" && h(AEmployees, { employees, currentUser }),
-      tab === "records" && h(ARecords, { records, employees }),
-      tab === "messages" && h(AMessages, { employees, messages, tickets }),
-      tab === "justifications" && h(AJustifications, { justifications })
+      tab === "dash" && h(ADash, { employees: myEmployees, records: myRecords, justifications: myJustifications }),
+      tab === "employees" && h(AEmployees, { employees: myEmployees, allEmployees: employees, currentUser }),
+      tab === "records" && h(ARecords, { records: myRecords, employees: myEmployees }),
+      tab === "messages" && h(AMessages, { employees: myEmployees, messages: myMessages, tickets: myTickets }),
+      tab === "justifications" && h(AJustifications, { justifications: myJustifications })
     ),
     h(BottomNav, { tabs, active: tab, onChange: setTab })
   );
@@ -679,9 +694,9 @@ function ADash({ employees, records, justifications }) {
   );
 }
 
-function AEmployees({ employees, currentUser }) {
-  const OWNER_LOGINS = ["admin", "123456"];
-  const isOwner = !!(currentUser && OWNER_LOGINS.indexOf(currentUser.username) !== -1);
+function AEmployees({ employees, allEmployees, currentUser }) {
+  const isOwner = isOwnerLogin(currentUser);
+  const myTeamId = teamIdOf(currentUser);
   const [modal, setModal] = useState(null);
   const blank = { name: "", username: "", password: "", role: "employee", posto: "", scheduleStart: "08:00", schedLunchOut: "12:00", schedLunchIn: "13:00", scheduleEnd: "17:00", lunchMinutes: 60, toleranceMinutes: 15 };
   const [form, setForm] = useState(blank);
@@ -691,11 +706,16 @@ function AEmployees({ employees, currentUser }) {
     if (!form.name.trim() || !form.username.trim() || !form.password.trim()) { setErr("Preencha nome, usuário e senha"); return; }
     if (!isOwner && form.role === "admin") { setErr("Apenas o administrador-dono pode cadastrar outros administradores."); return; }
     const uname = form.username.trim().toLowerCase();
-    if (employees.find(e => e.username === uname && (modal === "new" || e.id !== modal.id))) { setErr("Usuário já existe"); return; }
+    if (allEmployees.find(e => e.username === uname && (modal === "new" || e.id !== modal.id))) { setErr("Usuário já existe"); return; }
     const lunchDerived = parseHM(form.schedLunchIn) - parseHM(form.schedLunchOut);
     const data = { ...form, username: uname, lunchMinutes: lunchDerived > 0 ? lunchDerived : (Number(form.lunchMinutes) || 60), toleranceMinutes: Number(form.toleranceMinutes) || 0 };
-    if (modal === "new") await setItem("employees", genId(), { ...data, active: true, createdAt: new Date().toISOString() });
-    else await updateItem("employees", modal.id, data);
+    if (modal === "new") {
+      const newId = genId();
+      const newAdminId = data.role === "admin" ? newId : myTeamId;
+      await setItem("employees", newId, { ...data, adminId: newAdminId, active: true, createdAt: new Date().toISOString() });
+    } else {
+      await updateItem("employees", modal.id, data);
+    }
     setModal(null);
   };
   const del = async (id) => { if (!confirm("Excluir colaborador?")) return; await removeItem("employees", id); };
